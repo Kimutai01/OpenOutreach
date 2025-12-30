@@ -1,0 +1,72 @@
+{
+  "info": {
+    "name": "OpenOutreach API",
+    "description": "Collection for testing OpenOutreach API endpoints",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Health Check",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:8000/health",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8000",
+          "path": ["health"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Run Campaign (Sync)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"username\": \"your-email@example.com\",\n  \"password\": \"your-password\",\n  \"urls\": [\n    \"https://www.linkedin.com/in/johndoe\",\n    \"https://www.linkedin.com/in/janedoe\"\n  ],\n  \"campaign_name\": \"connect_follow_up\"\n}"
+        },
+        "url": {
+          "raw": "http://localhost:8000/campaign/run",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8000",
+          "path": ["campaign", "run"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Run Campaign (Async)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"username\": \"your-email@example.com\",\n  \"password\": \"your-password\",\n  \"urls\": [\n    \"https://www.linkedin.com/in/johndoe\"\n  ],\n  \"campaign_name\": \"connect_follow_up\"\n}"
+        },
+        "url": {
+          "raw": "http://localhost:8000/campaign/run-async",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8000",
+          "path": ["campaign", "run-async"]
+        }
+      },
+      "response": []
+    }
+  ]
+}

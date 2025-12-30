@@ -1,0 +1,8 @@
+# FastAPI and dependencies
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+# pydantic==2.10.5
+python-multipart==0.0.20
+
+# Include base requirements from main application
+-r ../requirements/base.txt
