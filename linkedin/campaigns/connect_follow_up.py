@@ -33,6 +33,7 @@ def process_profile_row(
         session: "AccountSession",
         profile: dict,
         perform_connections=True,
+        message: str = None,
 ):
     from linkedin.actions.connect import send_connection_request
     from linkedin.actions.message import send_follow_up_message
@@ -66,7 +67,7 @@ def process_profile_row(
         case ProfileState.ENRICHED:
             if not perform_connections:
                 return None
-            new_state = send_connection_request(key=key, profile=enriched_profile)
+            new_state = send_connection_request(key=key, profile=enriched_profile, message=message)
             enriched_profile = None if new_state != ProfileState.CONNECTED else enriched_profile
         case ProfileState.PENDING:
             new_state = get_connection_status(session, profile)
@@ -89,7 +90,7 @@ def process_profile_row(
     return enriched_profile
 
 
-def process_profiles(key, session, profiles: list[dict]):
+def process_profiles(key, session, profiles: list[dict], message: str = None):
     perform_connections = True
     for profile in profiles:
         go_ahead = True
@@ -100,6 +101,7 @@ def process_profiles(key, session, profiles: list[dict]):
                     session=session,
                     profile=profile,
                     perform_connections=perform_connections,
+                    message=message,
                 )
                 go_ahead = bool(profile)
             except SkipProfile as e:

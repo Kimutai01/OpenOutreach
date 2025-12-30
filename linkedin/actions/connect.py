@@ -13,10 +13,11 @@ logger = logging.getLogger(__name__)
 def send_connection_request(
         key: SessionKey,
         profile: Dict[str, Any],
+        message: str = None,
 ) -> ProfileState:
     """
-    Sends a LinkedIn connection request WITHOUT a note (fastest & safest).
-    All note-sending logic preserved below for future use.
+    Sends a LinkedIn connection request.
+    If message is provided, sends with a note. Otherwise sends without a note (fastest).
     """
     from linkedin.actions.connection_status import get_connection_status
 
@@ -41,13 +42,18 @@ def send_connection_request(
         logger.info("Skipping %s – %s", public_identifier, skip_reasons[connection_status])
         return connection_status
 
-    # Send invitation WITHOUT note (current active flow)
-    s1 = _connect_direct(session)
-    s2 = s1 or _connect_via_more(session)
-
-    s3 = s2 and _click_without_note(session)
-    s4 = s3 and _check_weekly_invitation_limit(session)
-    success = s4
+    # Send invitation with or without note based on message parameter
+    if message:
+        logger.info("Sending connection request WITH note (%d chars)", len(message))
+        success = _perform_send_invitation_with_note(session, message)
+        success = success and _check_weekly_invitation_limit(session)
+    else:
+        logger.info("Sending connection request WITHOUT note")
+        s1 = _connect_direct(session)
+        s2 = s1 or _connect_via_more(session)
+        s3 = s2 and _click_without_note(session)
+        s4 = s3 and _check_weekly_invitation_limit(session)
+        success = s4
 
     status = ProfileState.PENDING if success else ProfileState.ENRICHED
     logger.info(f"Connection request {status} → {public_identifier}")
@@ -151,6 +157,8 @@ def _perform_send_invitation_with_note(session, message: str):
     session.page.locator('button:has-text("Send"), button[aria-label*="Send invitation"]').first.click(force=True)
     session.wait()
     logger.debug("Connection request with note sent")
+    return True
+    return True
 
 
 if __name__ == "__main__":

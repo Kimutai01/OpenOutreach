@@ -12,6 +12,7 @@ class CampaignRequest(BaseModel):
     cookies: Optional[List[Dict[str, Any]]] = Field(None, description="LinkedIn session cookies (preferred method)")
     urls: List[str] = Field(..., description="List of LinkedIn profile URLs to target")
     campaign_name: Optional[str] = Field(default="connect_follow_up", description="Campaign name")
+    note: Optional[str] = Field(None, description="Optional note to include with connection requests (max 300 chars)")
 
     @field_validator('cookies', 'username', mode='before')
     @classmethod
@@ -42,7 +43,8 @@ class CampaignRequest(BaseModel):
                     "https://www.linkedin.com/in/johndoe",
                     "https://www.linkedin.com/in/janedoe"
                 ],
-                "campaign_name": "connect_follow_up"
+                "campaign_name": "connect_follow_up",
+                "note": "Hi! I'd love to connect and discuss opportunities in the tech industry."
             }
         }
 

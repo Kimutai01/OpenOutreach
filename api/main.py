@@ -115,7 +115,8 @@ async def run_campaign(request: CampaignRequest, background_tasks: BackgroundTas
             request.campaign_name,
             request.username,
             request.password,
-            request.cookies
+            request.cookies,
+            request.note
         )
 
         if result["success"]:
@@ -171,7 +172,8 @@ async def run_campaign_async(request: CampaignRequest, background_tasks: Backgro
                     campaign_name=request.campaign_name,
                     username=request.username,
                     password=request.password,
-                    cookies=request.cookies
+                    cookies=request.cookies,
+                    message=request.note
                 )
             finally:
                 loop.close()

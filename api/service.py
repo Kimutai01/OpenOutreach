@@ -148,7 +148,8 @@ class CampaignService:
         campaign_name: str = "connect_follow_up",
         username: str = None,
         password: str = None,
-        cookies: list = None
+        cookies: list = None,
+        message: str = None
     ) -> Dict:
         """
         Run a LinkedIn outreach campaign
@@ -159,6 +160,7 @@ class CampaignService:
             username: LinkedIn username/email (optional if cookies provided)
             password: LinkedIn password (optional if cookies provided)
             cookies: LinkedIn session cookies (preferred method)
+            message: Optional note to include with connection requests
 
         Returns:
             Dict with campaign results
@@ -198,7 +200,8 @@ class CampaignService:
                 launch_from_csv(
                     handle=handle,
                     csv_path=csv_path,
-                    campaign_name=campaign_name
+                    campaign_name=campaign_name,
+                    message=message
                 )
 
                 # Close all browser sessions after campaign completes

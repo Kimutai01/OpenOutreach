@@ -88,6 +88,7 @@ def launch_from_csv(
         handle: str,
         csv_path: Path | str = INPUT_CSV_PATH,
         campaign_name: str = CAMPAIGN_NAME,
+        message: str = None,
 ):
     session, key = AccountSessionRegistry.get_or_create_from_path(
         handle=handle,
@@ -104,7 +105,7 @@ def launch_from_csv(
     logger.info(f"Loaded {len(profiles):,} profiles from CSV – ready for battle!")
 
     session.ensure_browser()
-    process_profiles(key, session, profiles)
+    process_profiles(key, session, profiles, message=message)
 
 
 def launch_connect_follow_up_campaign(
