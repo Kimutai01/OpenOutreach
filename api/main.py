@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.models import CampaignRequest, CampaignResponse, HealthResponse, StatusResponse
+from api.models import CampaignRequest, CampaignResponse, HealthResponse, StatusResponse, MessageRequest, MessageResponse
 from api.service import CampaignService
 
 # Configure logging
@@ -251,6 +251,80 @@ async def get_status(request: CampaignRequest):
         raise
     except Exception as e:
         logger.error(f"Unexpected error in get_status: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
+        )
+
+
+@app.post("/message/send", response_model=MessageResponse)
+async def send_message(request: MessageRequest):
+    """
+    Send a message to a LinkedIn profile
+    
+    This endpoint sends a message to a connected LinkedIn profile.
+    Only profiles that are already connected will receive messages.
+    Each request sends one message to one profile.
+    
+    Args:
+        request: Message request containing cookies, URL, and message text
+        
+    Returns:
+        Message response with sending result
+        
+    Example:
+        POST /message/send
+        {
+            "cookies": [{"name": "li_at", "value": "...", ...}],
+            "url": "https://www.linkedin.com/in/johndoe",
+            "message": "Hi! I'd love to connect."
+        }
+    """
+    try:
+        logger.info(f"Received message request for profile: {request.url}")
+        logger.info(f"Message length: {len(request.message)} characters")
+        
+        # Validate authentication
+        has_cookies = request.cookies and len(request.cookies) > 0
+        has_credentials = request.username and request.password
+        
+        if not has_cookies and not has_credentials:
+            raise HTTPException(
+                status_code=400,
+                detail="Either 'cookies' or both 'username' and 'password' must be provided"
+            )
+        
+        # Validate input
+        if not request.url or not request.url.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="URL is required and cannot be empty."
+            )
+        
+        if not request.message or not request.message.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="Message is required and cannot be empty."
+            )
+        
+        # Send message in thread pool to avoid asyncio/Playwright conflict
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            executor,
+            campaign_service.send_message,
+            request.url,
+            request.message,
+            request.cookies,
+            request.username,
+            request.password
+        )
+        
+        return MessageResponse(**result)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in send_messages: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Internal server error: {str(e)}"

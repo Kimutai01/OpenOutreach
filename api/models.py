@@ -83,3 +83,39 @@ class StatusResponse(BaseModel):
                 "last_updated": "2025-12-29T12:00:00"
             }
         }
+
+
+class MessageRequest(BaseModel):
+    """Request model for sending messages"""
+    cookies: Optional[List[Dict[str, Any]]] = Field(None, description="LinkedIn session cookies (preferred method)")
+    username: Optional[str] = Field(None, description="LinkedIn username/email (deprecated, use cookies instead)")
+    password: Optional[str] = Field(None, description="LinkedIn password (deprecated, use cookies instead)")
+    url: str = Field(..., description="LinkedIn profile URL to send message to")
+    message: str = Field(..., description="Message text to send (required)")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "cookies": [
+                    {
+                        "name": "li_at",
+                        "value": "your_session_cookie_value",
+                        "domain": ".linkedin.com",
+                        "path": "/",
+                        "secure": True,
+                        "httpOnly": True
+                    }
+                ],
+                "url": "https://www.linkedin.com/in/johndoe",
+                "message": "Hi! I'd love to connect and discuss opportunities."
+            }
+        }
+
+
+class MessageResponse(BaseModel):
+    """Response model for message operations"""
+    success: bool
+    message: str
+    url: Optional[str] = None
+    public_identifier: Optional[str] = None
+    status: Optional[str] = None

@@ -594,6 +594,161 @@ class CampaignService:
                 "message": f"Error: {str(e)}"
             }
 
+    def send_message(
+        self,
+        url: str,
+        message: str,
+        cookies: list = None,
+        username: str = None,
+        password: str = None
+    ) -> Dict:
+        """
+        Send a message to a LinkedIn profile
+        
+        Args:
+            url: LinkedIn profile URL to send message to
+            message: Message text to send
+            cookies: LinkedIn session cookies (preferred method)
+            username: LinkedIn username/email (optional if cookies provided)
+            password: LinkedIn password (optional if cookies provided)
+            
+        Returns:
+            Dict with message sending result
+        """
+        from linkedin.actions.message import send_follow_up_message
+        from linkedin.actions.profile import scrape_profile
+        from linkedin.db.profiles import url_to_public_id
+        from linkedin.sessions.registry import AccountSessionRegistry, SessionKey
+        from linkedin.campaigns.connect_follow_up import INPUT_CSV_PATH
+        from linkedin.navigation.enums import MessageStatus
+        import linkedin.conf as conf
+        
+        config_path = None
+        cookie_file = None
+        session = None
+        
+        try:
+            # Create temporary account config
+            if cookies:
+                # Generate handle for cookie-based auth
+                import random
+                import string
+                handle = 'cookie_' + ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+                config_path, _ = self.create_temporary_account_config(handle=handle)
+                cookie_file = self.create_temporary_cookies_file(cookies, handle)
+            elif username:
+                handle = username.split('@')[0].replace('.', '_').replace('-', '_')
+                config_path, _ = self.create_temporary_account_config(username, password, handle)
+            else:
+                raise ValueError("Either 'cookies' or 'username' must be provided")
+            
+            # Update config to include cookie_file path
+            with open(config_path, "r", encoding="utf-8") as f:
+                config_data = yaml.safe_load(f) or {}
+            
+            if cookie_file:
+                config_data['accounts'][handle]['cookie_file'] = str(cookie_file)
+            
+            with open(config_path, "w", encoding="utf-8") as f:
+                yaml.dump(config_data, f, default_flow_style=False)
+            
+            # Temporarily replace the secrets path
+            original_secrets_path = conf.SECRETS_PATH
+            conf.SECRETS_PATH = config_path
+            
+            # Reload the config
+            with open(config_path, "r", encoding="utf-8") as f:
+                conf._raw_config = yaml.safe_load(f) or {}
+            conf._accounts_config = conf._raw_config.get("accounts", {})
+            
+            try:
+                # Create session key and get session
+                key = SessionKey.make(handle, "send_messages", INPUT_CSV_PATH)
+                session = AccountSessionRegistry.get_or_create(
+                    handle=key.handle,
+                    campaign_name=key.campaign_name,
+                    csv_hash=key.csv_hash,
+                )
+                
+                # Ensure browser is ready
+                session.ensure_browser()
+                
+                # Process single URL
+                try:
+                    public_identifier = url_to_public_id(url)
+                    profile = {
+                        "url": url,
+                        "public_identifier": public_identifier,
+                    }
+                    
+                    # Try to scrape profile to get full_name (helps with messaging)
+                    try:
+                        enriched_profile, _ = scrape_profile(key, profile)
+                        if enriched_profile:
+                            profile = enriched_profile
+                    except Exception as e:
+                        logger.warning(f"Could not scrape profile {public_identifier}, using basic profile: {e}")
+                        # Continue with basic profile - send_follow_up_message can work with just public_identifier
+                    
+                    # Send message
+                    status = send_follow_up_message(
+                        key=key,
+                        profile=profile,
+                        message=message
+                    )
+                    
+                    if status == MessageStatus.SENT:
+                        return {
+                            "success": True,
+                            "message": "Message sent successfully",
+                            "url": url,
+                            "public_identifier": public_identifier,
+                            "status": "SENT"
+                        }
+                    else:
+                        return {
+                            "success": False,
+                            "message": "Profile not connected or message could not be sent",
+                            "url": url,
+                            "public_identifier": public_identifier,
+                            "status": "SKIPPED"
+                        }
+                        
+                except Exception as e:
+                    logger.error(f"Error sending message to {url}: {str(e)}", exc_info=True)
+                    return {
+                        "success": False,
+                        "message": f"Error: {str(e)}",
+                        "url": url,
+                        "public_identifier": url_to_public_id(url) if url else None,
+                        "status": "ERROR"
+                    }
+                
+            finally:
+                # Close browser session
+                if session:
+                    try:
+                        session.close()
+                        AccountSessionRegistry.clear_all()
+                    except Exception as e:
+                        logger.warning(f"Error closing session: {e}")
+                
+                # Restore original config
+                conf.SECRETS_PATH = original_secrets_path
+                with open(original_secrets_path, "r", encoding="utf-8") as f:
+                    conf._raw_config = yaml.safe_load(f) or {}
+                conf._accounts_config = conf._raw_config.get("accounts", {})
+                
+        except Exception as e:
+            logger.error(f"Error in send_message: {str(e)}", exc_info=True)
+            raise
+        finally:
+            # Clean up temporary files
+            if config_path:
+                self._cleanup_temp_file(config_path)
+            if cookie_file:
+                self._cleanup_temp_file(cookie_file)
+
     def _cleanup_temp_file(self, path: Path):
         """Clean up temporary file"""
         try:
