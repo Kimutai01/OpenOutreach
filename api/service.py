@@ -135,11 +135,17 @@ class CampaignService:
                     except Exception as e:
                         logger.warning(f"Error closing session: {e}")
                 
-                # Restore original config
-                conf.SECRETS_PATH = original_secrets_path
-                with open(original_secrets_path, "r", encoding="utf-8") as f:
-                    conf._raw_config = yaml.safe_load(f) or {}
-                conf._accounts_config = conf._raw_config.get("accounts", {})
+                # Restore original config - always use the actual secrets path, not a potentially deleted temp file
+                from linkedin.conf import SECRETS_PATH as ACTUAL_SECRETS_PATH
+                conf.SECRETS_PATH = ACTUAL_SECRETS_PATH
+                if ACTUAL_SECRETS_PATH.exists():
+                    with open(ACTUAL_SECRETS_PATH, "r", encoding="utf-8") as f:
+                        conf._raw_config = yaml.safe_load(f) or {}
+                    conf._accounts_config = conf._raw_config.get("accounts", {})
+                else:
+                    # If the actual secrets file doesn't exist, just reset to empty
+                    conf._raw_config = {}
+                    conf._accounts_config = {}
                 
         except Exception as e:
             logger.error(f"Error in check_real_time_connection_status: {str(e)}", exc_info=True)
@@ -652,6 +658,9 @@ class CampaignService:
             with open(config_path, "w", encoding="utf-8") as f:
                 yaml.dump(config_data, f, default_flow_style=False)
             
+            # Store the actual secrets path (not a temporary one)
+            from linkedin.conf import SECRETS_PATH as ACTUAL_SECRETS_PATH
+            
             # Temporarily replace the secrets path
             original_secrets_path = conf.SECRETS_PATH
             conf.SECRETS_PATH = config_path
@@ -698,7 +707,7 @@ class CampaignService:
                     )
                     
                     if status == MessageStatus.SENT:
-                        return {
+                        result = {
                             "success": True,
                             "message": "Message sent successfully",
                             "url": url,
@@ -706,38 +715,56 @@ class CampaignService:
                             "status": "SENT"
                         }
                     else:
-                        return {
+                        result = {
                             "success": False,
                             "message": "Profile not connected or message could not be sent",
                             "url": url,
                             "public_identifier": public_identifier,
                             "status": "SKIPPED"
                         }
+                    
+                    # Close browser session before restoring config
+                    if session:
+                        try:
+                            session.close()
+                            AccountSessionRegistry.clear_all()
+                        except Exception as e:
+                            logger.warning(f"Error closing session: {e}")
+                    
+                    return result
                         
                 except Exception as e:
                     logger.error(f"Error sending message to {url}: {str(e)}", exc_info=True)
-                    return {
+                    result = {
                         "success": False,
                         "message": f"Error: {str(e)}",
                         "url": url,
                         "public_identifier": url_to_public_id(url) if url else None,
                         "status": "ERROR"
                     }
+                    
+                    # Close browser session before restoring config
+                    if session:
+                        try:
+                            session.close()
+                            AccountSessionRegistry.clear_all()
+                        except Exception as e:
+                            logger.warning(f"Error closing session: {e}")
+                    
+                    return result
                 
             finally:
-                # Close browser session
-                if session:
-                    try:
-                        session.close()
-                        AccountSessionRegistry.clear_all()
-                    except Exception as e:
-                        logger.warning(f"Error closing session: {e}")
-                
-                # Restore original config
-                conf.SECRETS_PATH = original_secrets_path
-                with open(original_secrets_path, "r", encoding="utf-8") as f:
-                    conf._raw_config = yaml.safe_load(f) or {}
-                conf._accounts_config = conf._raw_config.get("accounts", {})
+                # Restore original config - use the actual secrets path, not the stored one
+                # (which might be a temporary file from a previous request)
+                conf.SECRETS_PATH = ACTUAL_SECRETS_PATH
+                if ACTUAL_SECRETS_PATH.exists():
+                    with open(ACTUAL_SECRETS_PATH, "r", encoding="utf-8") as f:
+                        conf._raw_config = yaml.safe_load(f) or {}
+                    conf._accounts_config = conf._raw_config.get("accounts", {})
+                else:
+                    # If the actual secrets file doesn't exist, just reset to empty
+                    conf._raw_config = {}
+                    conf._accounts_config = {}
                 
         except Exception as e:
             logger.error(f"Error in send_message: {str(e)}", exc_info=True)
