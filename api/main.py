@@ -227,36 +227,22 @@ async def get_status(request: CampaignRequest):
                 detail="At least one URL is required"
             )
 
-        # Create temporary handle and cookies if provided
-        handle = None
-        cookie_file = None
-
-        if request.cookies:
-            # Generate handle for cookie-based auth
-            import random
-            import string
-            handle = 'cookie_' + ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
-            cookie_file = campaign_service.create_temporary_cookies_file(request.cookies, handle)
-            logger.info(f"Using cookie-based authentication with handle: {handle}")
-        elif request.username:
-            # Derive handle from username (legacy)
-            handle = request.username.split('@')[0].replace('.', '_').replace('-', '_')
-        else:
+        if not request.cookies and not request.username:
             raise HTTPException(
                 status_code=400,
                 detail="Either 'cookies' or 'username' must be provided"
             )
 
-        # Get status for each URL
-        results = []
-        is_cookie_auth = bool(request.cookies)
-        for url in request.urls:
-            result = campaign_service.get_profile_status_by_handle(handle, url, temp_config=is_cookie_auth)
-            results.append(result)
-
-        # Cleanup cookie file
-        if cookie_file:
-            campaign_service._cleanup_temp_file(cookie_file)
+        # Check real-time status by navigating to LinkedIn
+        loop = asyncio.get_event_loop()
+        results = await loop.run_in_executor(
+            executor,
+            campaign_service.check_real_time_connection_status,
+            request.urls,
+            request.cookies,
+            request.username,
+            request.password
+        )
 
         # Return single result or list depending on input
         return results[0] if len(results) == 1 else results

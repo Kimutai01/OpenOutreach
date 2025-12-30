@@ -20,6 +20,137 @@ class CampaignService:
     def __init__(self):
         self.temp_files: Dict[str, Path] = {}
 
+    def check_real_time_connection_status(
+        self,
+        urls: List[str],
+        cookies: list = None,
+        username: str = None,
+        password: str = None
+    ) -> List[Dict]:
+        """
+        Check real-time connection status by navigating to LinkedIn profiles
+        
+        Args:
+            urls: List of LinkedIn profile URLs to check
+            cookies: LinkedIn session cookies (preferred method)
+            username: LinkedIn username/email (optional if cookies provided)
+            password: LinkedIn password (optional if cookies provided)
+            
+        Returns:
+            List of dicts with connection status for each profile
+        """
+        from linkedin.actions.connection_status import get_connection_status
+        from linkedin.db.profiles import url_to_public_id
+        from linkedin.sessions.registry import AccountSessionRegistry, SessionKey
+        from linkedin.campaigns.connect_follow_up import INPUT_CSV_PATH
+        import linkedin.conf as conf
+        
+        config_path = None
+        cookie_file = None
+        session = None
+        
+        try:
+            # Create temporary account config
+            if cookies:
+                # Generate handle for cookie-based auth
+                import random
+                import string
+                handle = 'cookie_' + ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+                config_path, _ = self.create_temporary_account_config(handle=handle)
+                cookie_file = self.create_temporary_cookies_file(cookies, handle)
+            elif username:
+                handle = username.split('@')[0].replace('.', '_').replace('-', '_')
+                config_path, _ = self.create_temporary_account_config(username, password, handle)
+            else:
+                raise ValueError("Either 'cookies' or 'username' must be provided")
+            
+            # Update config to include cookie_file path
+            with open(config_path, "r", encoding="utf-8") as f:
+                config_data = yaml.safe_load(f) or {}
+            
+            if cookie_file:
+                config_data['accounts'][handle]['cookie_file'] = str(cookie_file)
+            
+            with open(config_path, "w", encoding="utf-8") as f:
+                yaml.dump(config_data, f, default_flow_style=False)
+            
+            # Temporarily replace the secrets path
+            original_secrets_path = conf.SECRETS_PATH
+            conf.SECRETS_PATH = config_path
+            
+            # Reload the config
+            with open(config_path, "r", encoding="utf-8") as f:
+                conf._raw_config = yaml.safe_load(f) or {}
+            conf._accounts_config = conf._raw_config.get("accounts", {})
+            
+            try:
+                # Create session key and get session
+                key = SessionKey.make(handle, "status_check", INPUT_CSV_PATH)
+                session = AccountSessionRegistry.get_or_create(
+                    handle=key.handle,
+                    campaign_name=key.campaign_name,
+                    csv_hash=key.csv_hash,
+                )
+                
+                # Ensure browser is ready
+                session.ensure_browser()
+                
+                # Check status for each URL
+                results = []
+                for url in urls:
+                    try:
+                        public_identifier = url_to_public_id(url)
+                        profile = {
+                            "url": url,
+                            "public_identifier": public_identifier,
+                        }
+                        
+                        # Navigate to profile and check status
+                        status = get_connection_status(session, profile)
+                        
+                        results.append({
+                            "url": url,
+                            "public_identifier": public_identifier,
+                            "state": status.value,
+                            "status": status.value,  # Alias for compatibility
+                        })
+                    except Exception as e:
+                        logger.error(f"Error checking status for {url}: {str(e)}", exc_info=True)
+                        results.append({
+                            "url": url,
+                            "public_identifier": None,
+                            "state": "ERROR",
+                            "status": "ERROR",
+                            "error": str(e)
+                        })
+                
+                return results
+                
+            finally:
+                # Close browser session
+                if session:
+                    try:
+                        session.close()
+                        AccountSessionRegistry.clear_all()
+                    except Exception as e:
+                        logger.warning(f"Error closing session: {e}")
+                
+                # Restore original config
+                conf.SECRETS_PATH = original_secrets_path
+                with open(original_secrets_path, "r", encoding="utf-8") as f:
+                    conf._raw_config = yaml.safe_load(f) or {}
+                conf._accounts_config = conf._raw_config.get("accounts", {})
+                
+        except Exception as e:
+            logger.error(f"Error in check_real_time_connection_status: {str(e)}", exc_info=True)
+            raise
+        finally:
+            # Clean up temporary files
+            if config_path:
+                self._cleanup_temp_file(config_path)
+            if cookie_file:
+                self._cleanup_temp_file(cookie_file)
+
     def create_temporary_account_config(self, username: str = None, password: str = None, handle: str = None) -> tuple[Path, str]:
         """
         Create a temporary account configuration file
@@ -42,6 +173,8 @@ class CampaignService:
                 import string
                 handle = 'cookie_' + ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
 
+        from linkedin.conf import COOKIES_DIR
+        
         config = {
             'accounts': {
                 handle: {
@@ -51,7 +184,8 @@ class CampaignService:
                     'daily_connections': 35,
                     'daily_messages': 40,
                     'proxy': None,
-                    'booking_link': None
+                    'booking_link': None,
+                    'cookie_file': str(COOKIES_DIR / f"{handle}.json")  # Will be updated if cookies provided
                 }
             }
         }
