@@ -75,7 +75,6 @@ class CampaignService:
                 yaml.dump(config_data, f, default_flow_style=False)
             
             # Temporarily replace the secrets path
-            original_secrets_path = conf.SECRETS_PATH
             conf.SECRETS_PATH = config_path
             
             # Reload the config
@@ -324,9 +323,9 @@ class CampaignService:
 
             # We need to reload the conf module to pick up the new config
             import linkedin.conf as conf
+            from linkedin.conf import SECRETS_PATH as ACTUAL_SECRETS_PATH
 
             # Temporarily replace the secrets path
-            original_secrets_path = conf.SECRETS_PATH
             conf.SECRETS_PATH = config_path
 
             # Reload the config
@@ -357,11 +356,16 @@ class CampaignService:
                 }
 
             finally:
-                # Restore original config
-                conf.SECRETS_PATH = original_secrets_path
-                with open(original_secrets_path, "r", encoding="utf-8") as f:
-                    conf._raw_config = yaml.safe_load(f) or {}
-                conf._accounts_config = conf._raw_config.get("accounts", {})
+                # Restore original config - always use the actual secrets path, not a potentially deleted temp file
+                conf.SECRETS_PATH = ACTUAL_SECRETS_PATH
+                if ACTUAL_SECRETS_PATH.exists():
+                    with open(ACTUAL_SECRETS_PATH, "r", encoding="utf-8") as f:
+                        conf._raw_config = yaml.safe_load(f) or {}
+                    conf._accounts_config = conf._raw_config.get("accounts", {})
+                else:
+                    # If the actual secrets file doesn't exist, just reset to empty
+                    conf._raw_config = {}
+                    conf._accounts_config = {}
 
                 # Clean up temporary files
                 if config_path:
@@ -422,11 +426,11 @@ class CampaignService:
             # If this is a cookie-based handle, create temporary config
             if temp_config:
                 import linkedin.conf as conf
+                from linkedin.conf import SECRETS_PATH as ACTUAL_SECRETS_PATH
 
                 config_path, _ = self.create_temporary_account_config(handle=handle)
 
                 # Temporarily replace the secrets path
-                original_secrets_path = conf.SECRETS_PATH
                 conf.SECRETS_PATH = config_path
 
                 # Reload the config
@@ -475,10 +479,15 @@ class CampaignService:
                 # Restore original config if we created a temporary one
                 if temp_config and config_path:
                     import linkedin.conf as conf
-                    conf.SECRETS_PATH = original_secrets_path
-                    with open(original_secrets_path, "r", encoding="utf-8") as f:
-                        conf._raw_config = yaml.safe_load(f) or {}
-                    conf._accounts_config = conf._raw_config.get("accounts", {})
+                    from linkedin.conf import SECRETS_PATH as ACTUAL_SECRETS_PATH
+                    conf.SECRETS_PATH = ACTUAL_SECRETS_PATH
+                    if ACTUAL_SECRETS_PATH.exists():
+                        with open(ACTUAL_SECRETS_PATH, "r", encoding="utf-8") as f:
+                            conf._raw_config = yaml.safe_load(f) or {}
+                        conf._accounts_config = conf._raw_config.get("accounts", {})
+                    else:
+                        conf._raw_config = {}
+                        conf._accounts_config = {}
                     self._cleanup_temp_file(config_path)
 
         except Exception as e:
@@ -524,11 +533,11 @@ class CampaignService:
             if password:
                 import yaml
                 import linkedin.conf as conf
+                from linkedin.conf import SECRETS_PATH as ACTUAL_SECRETS_PATH
 
                 config_path, handle = self.create_temporary_account_config(username, password, handle)
 
                 # Temporarily replace the secrets path
-                original_secrets_path = conf.SECRETS_PATH
                 conf.SECRETS_PATH = config_path
 
                 # Reload the config
@@ -579,10 +588,15 @@ class CampaignService:
                 # Restore original config if we created a temporary one
                 if password and config_path:
                     import linkedin.conf as conf
-                    conf.SECRETS_PATH = original_secrets_path
-                    with open(original_secrets_path, "r", encoding="utf-8") as f:
-                        conf._raw_config = yaml.safe_load(f) or {}
-                    conf._accounts_config = conf._raw_config.get("accounts", {})
+                    from linkedin.conf import SECRETS_PATH as ACTUAL_SECRETS_PATH
+                    conf.SECRETS_PATH = ACTUAL_SECRETS_PATH
+                    if ACTUAL_SECRETS_PATH.exists():
+                        with open(ACTUAL_SECRETS_PATH, "r", encoding="utf-8") as f:
+                            conf._raw_config = yaml.safe_load(f) or {}
+                        conf._accounts_config = conf._raw_config.get("accounts", {})
+                    else:
+                        conf._raw_config = {}
+                        conf._accounts_config = {}
                     self._cleanup_temp_file(config_path)
 
         except Exception as e:
@@ -662,7 +676,6 @@ class CampaignService:
             from linkedin.conf import SECRETS_PATH as ACTUAL_SECRETS_PATH
             
             # Temporarily replace the secrets path
-            original_secrets_path = conf.SECRETS_PATH
             conf.SECRETS_PATH = config_path
             
             # Reload the config
