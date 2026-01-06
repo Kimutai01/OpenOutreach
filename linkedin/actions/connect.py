@@ -146,10 +146,17 @@ def _perform_send_invitation_with_note(session, message: str):
         session.page.locator('div[role="button"][aria-label^="Invite"][aria-label*=" to connect"]').first.click()
 
     session.wait()
-    session.page.locator('button:has-text("Add a note")').first.click()
+    add_note_btn = session.page.locator('button:has-text("Add a note")')
+    # Wait for button to be visible before clicking
+    add_note_btn.first.wait_for(state="visible", timeout=10000)
+    add_note_btn.first.click()
     session.wait()
 
+    # Wait for textarea to be visible and ready before filling
+    # LinkedIn sometimes takes a moment to render the modal and textarea
+    # Increased timeout to 45s to handle slow network/rendering
     textarea = session.page.locator('textarea#custom-message, textarea[name="message"]')
+    textarea.first.wait_for(state="visible", timeout=45000)
     textarea.first.fill(message)
     session.wait()
     logger.debug("Filled note (%d chars)", len(message))
