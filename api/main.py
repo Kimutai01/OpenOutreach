@@ -425,31 +425,47 @@ async def send_message(request: MessageRequest):
         
         # Send message in executor to avoid asyncio/Playwright conflict
         loop = asyncio.get_event_loop()
-        if USE_PROCESS_POOL:
-            # ProcessPoolExecutor - use standalone function (no wrapper needed)
-            result = await loop.run_in_executor(
-                executor,
-                _send_message_wrapper,
-                request.url,
-                request.message,
-                request.cookies,
-                request.username,
-                request.password
+        try:
+            if USE_PROCESS_POOL:
+                # ProcessPoolExecutor - use standalone function (no wrapper needed)
+                logger.debug("Submitting message send to ProcessPoolExecutor")
+                result = await loop.run_in_executor(
+                    executor,
+                    _send_message_wrapper,
+                    request.url,
+                    request.message,
+                    request.cookies,
+                    request.username,
+                    request.password
+                )
+                logger.debug(f"Received result from ProcessPoolExecutor: {result}")
+            else:
+                # ThreadPoolExecutor - use wrapper to clear event loop
+                logger.debug("Submitting message send to ThreadPoolExecutor")
+                result = await loop.run_in_executor(
+                    executor,
+                    run_sync_playwright,
+                    campaign_service.send_message,
+                    request.url,
+                    request.message,
+                    request.cookies,
+                    request.username,
+                    request.password
+                )
+                logger.debug(f"Received result from ThreadPoolExecutor: {result}")
+            
+            logger.info(f"Message send completed, returning response: success={result.get('success')}, status={result.get('status')}")
+            return MessageResponse(**result)
+        except Exception as executor_error:
+            logger.error(f"Error in executor for send_message: {executor_error}", exc_info=True)
+            # Return error response if executor fails
+            return MessageResponse(
+                success=False,
+                message=f"Executor error: {str(executor_error)}",
+                url=request.url,
+                public_identifier=None,
+                status="ERROR"
             )
-        else:
-            # ThreadPoolExecutor - use wrapper to clear event loop
-            result = await loop.run_in_executor(
-                executor,
-                run_sync_playwright,
-                campaign_service.send_message,
-                request.url,
-                request.message,
-                request.cookies,
-                request.username,
-                request.password
-            )
-        
-        return MessageResponse(**result)
         
     except HTTPException:
         raise

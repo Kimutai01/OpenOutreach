@@ -727,6 +727,7 @@ class CampaignService:
                             "public_identifier": public_identifier,
                             "status": "SENT"
                         }
+                        logger.info(f"Message sending completed successfully for {public_identifier}")
                     else:
                         result = {
                             "success": False,
@@ -735,15 +736,19 @@ class CampaignService:
                             "public_identifier": public_identifier,
                             "status": "SKIPPED"
                         }
+                        logger.info(f"Message sending skipped for {public_identifier} - status: {status}")
                     
                     # Close browser session before restoring config
                     if session:
                         try:
                             session.close()
                             AccountSessionRegistry.clear_all()
+                            logger.debug("Browser session closed successfully")
                         except Exception as e:
                             logger.warning(f"Error closing session: {e}")
                     
+                    # Log before returning to ensure we reach this point
+                    logger.info(f"Returning result for {public_identifier}: success={result['success']}, status={result['status']}")
                     return result
                         
                 except Exception as e:
@@ -781,7 +786,14 @@ class CampaignService:
                 
         except Exception as e:
             logger.error(f"Error in send_message: {str(e)}", exc_info=True)
-            raise
+            # Return error response instead of raising
+            return {
+                "success": False,
+                "message": f"Error: {str(e)}",
+                "url": url,
+                "public_identifier": url_to_public_id(url) if url else None,
+                "status": "ERROR"
+            }
         finally:
             # Clean up temporary files
             if config_path:
