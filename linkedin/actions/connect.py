@@ -2,6 +2,8 @@
 import logging
 from typing import Dict, Any
 
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
 from linkedin.navigation.enums import ProfileState
 from linkedin.navigation.exceptions import SkipProfile, ReachedConnectionLimit
 from linkedin.navigation.utils import get_top_card
@@ -45,7 +47,8 @@ def send_connection_request(
     # Send invitation with or without note based on message parameter
     if message:
         logger.info("Sending connection request WITH note (%d chars)", len(message))
-        success = _perform_send_invitation_with_note(session, message)
+        profile_url = profile.get('url') or f"https://www.linkedin.com/in/{public_identifier}/"
+        success = _perform_send_invitation_with_note(session, message, profile_url)
         success = success and _check_weekly_invitation_limit(session)
     else:
         logger.info("Sending connection request WITHOUT note")
@@ -131,8 +134,13 @@ def _click_without_note(session):
 # ===================================================================
 # FUTURE: Send with personalized note (just uncomment when ready)
 # ===================================================================
-def _perform_send_invitation_with_note(session, message: str):
-    """Full flow with custom note – ready to enable anytime."""
+def _perform_send_invitation_with_note(session, message: str, profile_url: str):
+    """
+    Full flow with custom note.
+    Falls back to sending without note if textarea cannot be located
+    (e.g., when user has reached connection note limit).
+    When fallback occurs, navigates back to profile and sends without note.
+    """
     session.wait()
     top_card = get_top_card(session)
 
@@ -146,26 +154,58 @@ def _perform_send_invitation_with_note(session, message: str):
         session.page.locator('div[role="button"][aria-label^="Invite"][aria-label*=" to connect"]').first.click()
 
     session.wait()
+    
+    # Try to add a note - check if "Add a note" button exists
     add_note_btn = session.page.locator('button:has-text("Add a note")')
-    # Wait for button to be visible before clicking
-    add_note_btn.first.wait_for(state="visible", timeout=10000)
-    add_note_btn.first.click()
-    session.wait()
+    try:
+        # Wait for button to be visible before clicking
+        add_note_btn.first.wait_for(state="visible", timeout=10000)
+        add_note_btn.first.click()
+        session.wait()
 
-    # Wait for textarea to be visible and ready before filling
-    # LinkedIn sometimes takes a moment to render the modal and textarea
-    # Increased timeout to 45s to handle slow network/rendering
-    textarea = session.page.locator('textarea#custom-message, textarea[name="message"]')
-    textarea.first.wait_for(state="visible", timeout=45000)
-    textarea.first.fill(message)
-    session.wait()
-    logger.debug("Filled note (%d chars)", len(message))
+        # Wait for textarea to be visible and ready before filling
+        # LinkedIn sometimes takes a moment to render the modal and textarea
+        # If user has reached connection note limit, textarea won't appear
+        textarea = session.page.locator('textarea#custom-message, textarea[name="message"]')
+        textarea.first.wait_for(state="visible", timeout=15000)
+        textarea.first.fill(message)
+        session.wait()
+        logger.debug("Filled note (%d chars)", len(message))
 
-    session.page.locator('button:has-text("Send"), button[aria-label*="Send invitation"]').first.click(force=True)
-    session.wait()
-    logger.debug("Connection request with note sent")
-    return True
-    return True
+        send_btn = session.page.locator('button:has-text("Send"), button[aria-label*="Send invitation"]')
+        send_btn.first.click(force=True)
+        session.wait()
+        logger.debug("Connection request with note sent")
+        return True
+        
+    except PlaywrightTimeoutError:
+        # Textarea not found - likely user has reached connection note limit
+        # Navigate back to profile and send without note
+        logger.warning("Could not locate textarea for note. User may have reached connection note limit. Navigating back to profile and sending without note.")
+        
+        # Try to close any open modal by pressing Escape
+        try:
+            session.page.keyboard.press("Escape")
+            session.wait(to_scrape=False)
+        except Exception:
+            pass  # Modal might already be closed or navigation will close it
+        
+        # Navigate back to profile page
+        from linkedin.navigation.utils import goto_page
+        public_identifier = profile_url.split('/in/')[-1].rstrip('/')
+        goto_page(
+            session,
+            action=lambda: session.page.goto(profile_url),
+            expected_url_pattern=f"/in/{public_identifier}",
+            error_message="Failed to navigate back to profile",
+            to_scrape=False
+        )
+        
+        # Now send without note using the standard flow
+        s1 = _connect_direct(session)
+        s2 = s1 or _connect_via_more(session)
+        s3 = s2 and _click_without_note(session)
+        return s3
 
 
 if __name__ == "__main__":
