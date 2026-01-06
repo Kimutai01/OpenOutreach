@@ -26,7 +26,70 @@ logger = logging.getLogger(__name__)
 campaign_service = CampaignService()
 
 # Thread pool for running sync Playwright code
-executor = ThreadPoolExecutor(max_workers=5)
+# Note: Each browser instance uses ~100-200MB RAM
+# Adjust max_workers based on available resources:
+# - 4GB RAM server: max_workers=10-15
+# - 8GB RAM server: max_workers=20-30
+# - 16GB+ RAM server: max_workers=40-50
+# For 100 concurrent users, consider horizontal scaling (multiple instances)
+import os
+MAX_WORKERS = int(os.getenv("MAX_WORKERS", "10"))  # Default to 10, configurable via env
+executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+
+
+def run_sync_playwright(func, *args, **kwargs):
+    """
+    Wrapper to run Playwright sync code in a thread with no asyncio context.
+    This prevents Playwright from detecting the asyncio event loop.
+    
+    The issue: Playwright's sync API checks for an asyncio event loop using
+    asyncio.get_running_loop() or similar, and can detect it even from threads.
+    
+    Solution: Explicitly clear the event loop for this thread before running Playwright.
+    This ensures Playwright's sync API won't detect any asyncio context.
+    """
+    import asyncio
+    import threading
+    
+    # Get the current thread's event loop (if any)
+    old_loop = None
+    try:
+        # Try to get the event loop for this thread
+        old_loop = asyncio.get_event_loop()
+        # Check if it's actually running (which would cause the error)
+        if old_loop.is_running():
+            # If there's a running loop, we need to clear it
+            old_loop = None  # Don't try to restore a running loop
+    except RuntimeError:
+        # No event loop in this thread - that's what we want
+        old_loop = None
+    
+    try:
+        # Explicitly set event loop to None for this thread
+        # This is the key fix - prevents Playwright from detecting asyncio context
+        asyncio.set_event_loop(None)
+        
+        # Also ensure get_running_loop() won't find anything
+        # (This is what Playwright actually checks)
+        try:
+            asyncio.get_running_loop()
+            # If we get here, there's still a running loop somehow
+            # This shouldn't happen, but log it if it does
+            logger.warning("Unexpected running loop detected in worker thread")
+        except RuntimeError:
+            # Good - no running loop, which is what we want
+            pass
+        
+        # Now run the actual function - Playwright won't detect asyncio
+        return func(*args, **kwargs)
+    finally:
+        # Restore the old event loop if there was one (and it wasn't running)
+        if old_loop is not None and not old_loop.is_running():
+            try:
+                asyncio.set_event_loop(old_loop)
+            except Exception:
+                # If restoration fails, that's okay - we're in a worker thread
+                pass
 
 
 @asynccontextmanager
@@ -110,6 +173,7 @@ async def run_campaign(request: CampaignRequest, background_tasks: BackgroundTas
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             executor,
+            run_sync_playwright,
             campaign_service.run_campaign,
             request.urls,
             request.campaign_name,
@@ -237,6 +301,7 @@ async def get_status(request: CampaignRequest):
         loop = asyncio.get_event_loop()
         results = await loop.run_in_executor(
             executor,
+            run_sync_playwright,
             campaign_service.check_real_time_connection_status,
             request.urls,
             request.cookies,
@@ -311,6 +376,7 @@ async def send_message(request: MessageRequest):
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             executor,
+            run_sync_playwright,
             campaign_service.send_message,
             request.url,
             request.message,
