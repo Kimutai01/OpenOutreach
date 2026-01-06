@@ -247,25 +247,43 @@ async def run_campaign_async(request: CampaignRequest, background_tasks: Backgro
                 detail="No URLs provided. Please provide at least one LinkedIn profile URL."
             )
 
-        # Run campaign in background using thread pool
-        def run_in_background():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+        # Run campaign in background using executor
+        # We need to use asyncio.run_in_executor in the background task
+        # to properly execute the campaign in the executor
+        async def run_campaign_background():
+            """Background task that runs the campaign in the executor"""
+            loop = asyncio.get_event_loop()
             try:
-                campaign_service.run_campaign(
-                    urls=request.urls,
-                    campaign_name=request.campaign_name,
-                    username=request.username,
-                    password=request.password,
-                    cookies=request.cookies,
-                    message=request.note
-                )
-            finally:
-                loop.close()
-
-        background_tasks.add_task(
-            lambda: executor.submit(run_in_background)
-        )
+                if USE_PROCESS_POOL:
+                    # ProcessPoolExecutor - use standalone function
+                    await loop.run_in_executor(
+                        executor,
+                        _run_campaign_wrapper,
+                        request.urls,
+                        request.campaign_name,
+                        request.username,
+                        request.password,
+                        request.cookies,
+                        request.note
+                    )
+                else:
+                    # ThreadPoolExecutor - use wrapper to clear event loop
+                    await loop.run_in_executor(
+                        executor,
+                        run_sync_playwright,
+                        campaign_service.run_campaign,
+                        request.urls,
+                        request.campaign_name,
+                        request.username,
+                        request.password,
+                        request.cookies,
+                        request.note
+                    )
+                logger.info(f"Background campaign '{request.campaign_name}' completed")
+            except Exception as e:
+                logger.error(f"Error in background campaign '{request.campaign_name}': {e}", exc_info=True)
+        
+        background_tasks.add_task(run_campaign_background)
 
         return CampaignResponse(
             success=True,
