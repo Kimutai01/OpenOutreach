@@ -17,6 +17,15 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 AI_MODEL = os.getenv("AI_MODEL", "gpt-4o-mini")
 
 # ----------------------------------------------------------------------
+# BrightData proxy config
+# ----------------------------------------------------------------------
+BRIGHTDATA_SERVER = os.getenv("BRIGHTDATA_SERVER", "http://brd.superproxy.io:33335")
+BRIGHTDATA_US_USERNAME = os.getenv("BRIGHTDATA_US_USERNAME")
+BRIGHTDATA_US_PASSWORD = os.getenv("BRIGHTDATA_US_PASSWORD")
+BRIGHTDATA_INTL_USERNAME = os.getenv("BRIGHTDATA_INTL_USERNAME")
+BRIGHTDATA_INTL_PASSWORD = os.getenv("BRIGHTDATA_INTL_PASSWORD")
+
+# ----------------------------------------------------------------------
 # Paths (all under assets/)
 # ----------------------------------------------------------------------
 ROOT_DIR = Path(__file__).parent.parent
@@ -82,6 +91,37 @@ def get_account_config(handle: str) -> Dict[str, Any]:
         "cookie_file": COOKIES_DIR / f"{handle}.json",
         "db_path": account_db_path,  # per-handle database
         "booking_link": acct.get("booking_link"),
+    }
+
+
+def get_proxy_config(region: str = "us") -> Dict[str, Any] | None:
+    """
+    Return a Playwright-ready proxy dict for the given region.
+
+    region="us"              → linkedin_scraper1 (US-locked zone)
+    region="gb"/"de"/etc.   → linkedin_scraper2 with -country-{region} suffix
+
+    Returns None if proxy credentials are not configured in the environment.
+    The sticky session suffix (-session-{handle}) is appended later in
+    _build_proxy_config() inside login.py.
+    """
+    region = (region or "us").lower().strip()
+
+    if region == "us":
+        if not BRIGHTDATA_US_USERNAME or not BRIGHTDATA_US_PASSWORD:
+            return None
+        return {
+            "server": BRIGHTDATA_SERVER,
+            "username": BRIGHTDATA_US_USERNAME,
+            "password": BRIGHTDATA_US_PASSWORD,
+        }
+
+    if not BRIGHTDATA_INTL_USERNAME or not BRIGHTDATA_INTL_PASSWORD:
+        return None
+    return {
+        "server": BRIGHTDATA_SERVER,
+        "username": f"{BRIGHTDATA_INTL_USERNAME}-country-{region}",
+        "password": BRIGHTDATA_INTL_PASSWORD,
     }
 
 

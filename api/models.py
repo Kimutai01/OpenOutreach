@@ -13,6 +13,7 @@ class CampaignRequest(BaseModel):
     urls: List[str] = Field(..., description="List of LinkedIn profile URLs to target")
     campaign_name: Optional[str] = Field(default="connect_follow_up", description="Campaign name")
     note: Optional[str] = Field(None, description="Optional note to include with connection requests (max 300 chars)")
+    region: Optional[str] = Field(default="us", description="ISO country code for proxy routing (e.g. 'us', 'gb', 'de')")
 
     @field_validator('cookies', 'username', mode='before')
     @classmethod
@@ -92,6 +93,7 @@ class MessageRequest(BaseModel):
     password: Optional[str] = Field(None, description="LinkedIn password (deprecated, use cookies instead)")
     url: str = Field(..., description="LinkedIn profile URL to send message to")
     message: str = Field(..., description="Message text to send (required)")
+    region: Optional[str] = Field(default="us", description="ISO country code for proxy routing (e.g. 'us', 'gb', 'de')")
 
     class Config:
         json_schema_extra = {

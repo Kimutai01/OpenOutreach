@@ -25,7 +25,8 @@ class CampaignService:
         urls: List[str],
         cookies: list = None,
         username: str = None,
-        password: str = None
+        password: str = None,
+        region: str = "us",
     ) -> List[Dict]:
         """
         Check real-time connection status by navigating to LinkedIn profiles
@@ -48,40 +49,43 @@ class CampaignService:
         config_path = None
         cookie_file = None
         session = None
-        
+
         try:
+            from linkedin.conf import get_proxy_config
+            proxy = get_proxy_config(region)
+
             # Create temporary account config
             if cookies:
                 # Generate handle for cookie-based auth
                 import random
                 import string
                 handle = 'cookie_' + ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
-                config_path, _ = self.create_temporary_account_config(handle=handle)
+                config_path, _ = self.create_temporary_account_config(handle=handle, proxy=proxy)
                 cookie_file = self.create_temporary_cookies_file(cookies, handle)
             elif username:
                 handle = username.split('@')[0].replace('.', '_').replace('-', '_')
-                config_path, _ = self.create_temporary_account_config(username, password, handle)
+                config_path, _ = self.create_temporary_account_config(username, password, handle, proxy=proxy)
             else:
                 raise ValueError("Either 'cookies' or 'username' must be provided")
-            
+
             # Update config to include cookie_file path
             with open(config_path, "r", encoding="utf-8") as f:
                 config_data = yaml.safe_load(f) or {}
-            
+
             if cookie_file:
                 config_data['accounts'][handle]['cookie_file'] = str(cookie_file)
-            
+
             with open(config_path, "w", encoding="utf-8") as f:
                 yaml.dump(config_data, f, default_flow_style=False)
-            
+
             # Temporarily replace the secrets path
             conf.SECRETS_PATH = config_path
-            
+
             # Reload the config
             with open(config_path, "r", encoding="utf-8") as f:
                 conf._raw_config = yaml.safe_load(f) or {}
             conf._accounts_config = conf._raw_config.get("accounts", {})
-            
+
             try:
                 # Create session key and get session
                 key = SessionKey.make(handle, "status_check", INPUT_CSV_PATH)
@@ -156,7 +160,7 @@ class CampaignService:
             if cookie_file:
                 self._cleanup_temp_file(cookie_file)
 
-    def create_temporary_account_config(self, username: str = None, password: str = None, handle: str = None) -> tuple[Path, str]:
+    def create_temporary_account_config(self, username: str = None, password: str = None, handle: str = None, proxy: dict = None) -> tuple[Path, str]:
         """
         Create a temporary account configuration file
 
@@ -188,7 +192,7 @@ class CampaignService:
                     'active': True,
                     'daily_connections': 35,
                     'daily_messages': 40,
-                    'proxy': None,
+                    'proxy': proxy,
                     'booking_link': None,
                     'cookie_file': str(COOKIES_DIR / f"{handle}.json")  # Will be updated if cookies provided
                 }
@@ -288,7 +292,8 @@ class CampaignService:
         username: str = None,
         password: str = None,
         cookies: list = None,
-        message: str = None
+        message: str = None,
+        region: str = "us",
     ) -> Dict:
         """
         Run a LinkedIn outreach campaign
@@ -309,8 +314,11 @@ class CampaignService:
         cookie_file = None
 
         try:
+            from linkedin.conf import get_proxy_config
+            proxy = get_proxy_config(region)
+
             # Create temporary account config
-            config_path, handle = self.create_temporary_account_config(username, password)
+            config_path, handle = self.create_temporary_account_config(username, password, proxy=proxy)
 
             # If cookies provided, create cookie file
             if cookies:
@@ -620,7 +628,8 @@ class CampaignService:
         message: str,
         cookies: list = None,
         username: str = None,
-        password: str = None
+        password: str = None,
+        region: str = "us",
     ) -> Dict:
         """
         Send a message to a LinkedIn profile
@@ -646,22 +655,25 @@ class CampaignService:
         config_path = None
         cookie_file = None
         session = None
-        
+
         try:
+            from linkedin.conf import get_proxy_config
+            proxy = get_proxy_config(region)
+
             # Create temporary account config
             if cookies:
                 # Generate handle for cookie-based auth
                 import random
                 import string
                 handle = 'cookie_' + ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
-                config_path, _ = self.create_temporary_account_config(handle=handle)
+                config_path, _ = self.create_temporary_account_config(handle=handle, proxy=proxy)
                 cookie_file = self.create_temporary_cookies_file(cookies, handle)
             elif username:
                 handle = username.split('@')[0].replace('.', '_').replace('-', '_')
-                config_path, _ = self.create_temporary_account_config(username, password, handle)
+                config_path, _ = self.create_temporary_account_config(username, password, handle, proxy=proxy)
             else:
                 raise ValueError("Either 'cookies' or 'username' must be provided")
-            
+
             # Update config to include cookie_file path
             with open(config_path, "r", encoding="utf-8") as f:
                 config_data = yaml.safe_load(f) or {}

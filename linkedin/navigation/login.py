@@ -49,11 +49,52 @@ def playwright_login(session: "AccountSession"):
     )
 
 
-def build_playwright(storage_state=None):
+def _build_proxy_config(config: dict, handle: str) -> dict | None:
+    """
+    Build Playwright proxy dict from account config.
+
+    Supports two formats in accounts.secrets.yaml:
+
+      # Simple URL string:
+      proxy: "http://user:pass@brd.superproxy.io:33335"
+
+      # Structured (BrightData sticky session recommended):
+      proxy:
+        server: "http://brd.superproxy.io:33335"
+        username: "brd-customer-xxx-zone-linkedin_scraper1"
+        password: "yourpassword"
+
+    When using structured format without an explicit session suffix in username,
+    a sticky session ID derived from the account handle is appended automatically
+    so each account consistently uses the same IP.
+    """
+    raw = config.get("proxy")
+    if not raw:
+        return None
+
+    if isinstance(raw, str):
+        return {"server": raw}
+
+    if isinstance(raw, dict):
+        username = raw.get("username", "")
+        # Append sticky session suffix if not already present
+        if username and "-session-" not in username:
+            username = f"{username}-session-{handle}"
+        return {
+            "server": raw["server"],
+            "username": username,
+            "password": raw.get("password", ""),
+        }
+
+    logger.warning("Unrecognised proxy config format for @%s – skipping proxy", handle)
+    return None
+
+
+def build_playwright(storage_state=None, proxy=None):
     logger.debug("Launching Playwright")
     playwright = sync_playwright().start()
-    browser = playwright.chromium.launch(headless=True, slow_mo=200)
-    context = browser.new_context(storage_state=storage_state)
+    browser = playwright.chromium.launch(headless=False, slow_mo=200)
+    context = browser.new_context(storage_state=storage_state, proxy=proxy)
     Stealth().apply_stealth_sync(context)
     page = context.new_page()
     return page, context, browser, playwright
@@ -68,7 +109,14 @@ def init_playwright_session(session: "AccountSession", handle: str):
     if storage_state:
         logger.info("Devouring saved cookies → %s", state_file)
 
-    session.page, session.context, session.browser, session.playwright = build_playwright(storage_state=storage_state)
+    proxy = _build_proxy_config(config, handle)
+    if proxy:
+        logger.info("Using proxy → %s", proxy["server"])
+
+    session.page, session.context, session.browser, session.playwright = build_playwright(
+        storage_state=storage_state,
+        proxy=proxy,
+    )
 
     if not storage_state:
         playwright_login(session)

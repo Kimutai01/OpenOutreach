@@ -28,20 +28,20 @@ campaign_service = CampaignService()
 
 # Standalone functions for ProcessPoolExecutor (must be picklable)
 # These functions are defined at module level so they can be pickled
-def _run_campaign_wrapper(urls, campaign_name, username, password, cookies, message):
+def _run_campaign_wrapper(urls, campaign_name, username, password, cookies, message, region):
     """Wrapper function for ProcessPoolExecutor - must be at module level"""
     service = CampaignService()
-    return service.run_campaign(urls, campaign_name, username, password, cookies, message)
+    return service.run_campaign(urls, campaign_name, username, password, cookies, message, region)
 
-def _check_status_wrapper(urls, cookies, username, password):
+def _check_status_wrapper(urls, cookies, username, password, region):
     """Wrapper function for ProcessPoolExecutor - must be at module level"""
     service = CampaignService()
-    return service.check_real_time_connection_status(urls, cookies, username, password)
+    return service.check_real_time_connection_status(urls, cookies, username, password, region)
 
-def _send_message_wrapper(url, message, cookies, username, password):
+def _send_message_wrapper(url, message, cookies, username, password, region):
     """Wrapper function for ProcessPoolExecutor - must be at module level"""
     service = CampaignService()
-    return service.send_message(url, message, cookies, username, password)
+    return service.send_message(url, message, cookies, username, password, region)
 
 # Executor for running sync Playwright code
 # Note: Each browser instance uses ~100-200MB RAM
@@ -188,7 +188,8 @@ async def run_campaign(request: CampaignRequest, background_tasks: BackgroundTas
                 request.username,
                 request.password,
                 request.cookies,
-                request.note
+                request.note,
+                request.region,
             )
         else:
             # ThreadPoolExecutor - use wrapper to clear event loop
@@ -201,7 +202,8 @@ async def run_campaign(request: CampaignRequest, background_tasks: BackgroundTas
                 request.username,
                 request.password,
                 request.cookies,
-                request.note
+                request.note,
+                request.region,
             )
 
         if result["success"]:
@@ -264,7 +266,8 @@ async def run_campaign_async(request: CampaignRequest, background_tasks: Backgro
                         request.username,
                         request.password,
                         request.cookies,
-                        request.note
+                        request.note,
+                        request.region,
                     )
                 else:
                     # ThreadPoolExecutor - use wrapper to clear event loop
@@ -277,7 +280,8 @@ async def run_campaign_async(request: CampaignRequest, background_tasks: Backgro
                         request.username,
                         request.password,
                         request.cookies,
-                        request.note
+                        request.note,
+                        request.region,
                     )
                 logger.info(f"Background campaign '{request.campaign_name}' completed")
             except Exception as e:
@@ -346,7 +350,8 @@ async def get_status(request: CampaignRequest):
                 request.urls,
                 request.cookies,
                 request.username,
-                request.password
+                request.password,
+                request.region,
             )
         else:
             # ThreadPoolExecutor - use wrapper to clear event loop
@@ -357,7 +362,8 @@ async def get_status(request: CampaignRequest):
                 request.urls,
                 request.cookies,
                 request.username,
-                request.password
+                request.password,
+                request.region,
             )
 
         # Return single result or list depending on input
@@ -436,7 +442,8 @@ async def send_message(request: MessageRequest):
                     request.message,
                     request.cookies,
                     request.username,
-                    request.password
+                    request.password,
+                    request.region,
                 )
                 logger.debug(f"Received result from ProcessPoolExecutor: {result}")
             else:
@@ -450,7 +457,8 @@ async def send_message(request: MessageRequest):
                     request.message,
                     request.cookies,
                     request.username,
-                    request.password
+                    request.password,
+                    request.region,
                 )
                 logger.debug(f"Received result from ThreadPoolExecutor: {result}")
             
