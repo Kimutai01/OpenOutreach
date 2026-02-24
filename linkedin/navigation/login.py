@@ -93,7 +93,7 @@ def _build_proxy_config(config: dict, handle: str) -> dict | None:
 def build_playwright(storage_state=None, proxy=None):
     logger.debug("Launching Playwright")
     playwright = sync_playwright().start()
-    browser = playwright.chromium.launch(headless=False, slow_mo=200)
+    browser = playwright.chromium.launch(headless=True, slow_mo=200)
     context = browser.new_context(storage_state=storage_state, proxy=proxy)
     Stealth().apply_stealth_sync(context)
     page = context.new_page()
