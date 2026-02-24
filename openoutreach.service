@@ -1,0 +1,16 @@
+[Unit]
+Description=OpenOutreach API
+After=network.target
+
+[Service]
+User=root
+WorkingDirectory=/root/OpenOutreach
+EnvironmentFile=/root/OpenOutreach/.env
+ExecStart=/root/OpenOutreach/venv/bin/uvicorn api.main:app --host 0.0.0.0 --port 8000 --workers 1
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
