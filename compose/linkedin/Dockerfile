@@ -23,7 +23,8 @@ RUN playwright install --with-deps chromium
 
 # Copy necessary startup scripts
 COPY ./compose/linkedin/start /start
-RUN sed -i 's/\r$//g' /start && chmod +x /start
+COPY ./compose/linkedin/start-worker /start-worker
+RUN sed -i 's/\r$//g' /start /start-worker && chmod +x /start /start-worker
 
 # Copy the entire application code to the app directory
 COPY . ${APP_HOME}

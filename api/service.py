@@ -14,6 +14,37 @@ from linkedin.db.profiles import url_to_public_id
 logger = logging.getLogger(__name__)
 
 
+def _read_profile_states(handle: str, urls: List[str]) -> List[Dict]:
+    """Read final per-profile states from the campaign SQLite DB."""
+    from linkedin.conf import DATA_DIR
+    from linkedin.db.models import Profile
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    db_path = DATA_DIR / f"{handle}.db"
+    if not db_path.exists():
+        return []
+
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    Session = sessionmaker(bind=engine)
+    db_session = Session()
+    try:
+        public_ids = [url_to_public_id(u) for u in urls]
+        rows = db_session.query(Profile).filter(Profile.public_identifier.in_(public_ids)).all()
+        id_to_state = {r.public_identifier: r.state for r in rows}
+        return [
+            {
+                "url": u,
+                "public_identifier": url_to_public_id(u),
+                "state": id_to_state.get(url_to_public_id(u), "UNKNOWN"),
+            }
+            for u in urls
+        ]
+    finally:
+        db_session.close()
+        engine.dispose()
+
+
 class CampaignService:
     """Service to handle campaign operations"""
 
@@ -26,7 +57,7 @@ class CampaignService:
         cookies: list = None,
         username: str = None,
         password: str = None,
-        region: str = "us",
+        proxy: dict = None,
     ) -> List[Dict]:
         """
         Check real-time connection status by navigating to LinkedIn profiles
@@ -51,9 +82,6 @@ class CampaignService:
         session = None
 
         try:
-            from linkedin.conf import get_proxy_config
-            proxy = get_proxy_config(region)
-
             # Create temporary account config
             if cookies:
                 # Generate handle for cookie-based auth
@@ -293,7 +321,7 @@ class CampaignService:
         password: str = None,
         cookies: list = None,
         message: str = None,
-        region: str = "us",
+        proxy: dict = None,
     ) -> Dict:
         """
         Run a LinkedIn outreach campaign
@@ -305,6 +333,7 @@ class CampaignService:
             password: LinkedIn password (optional if cookies provided)
             cookies: LinkedIn session cookies (preferred method)
             message: Optional note to include with connection requests
+            proxy: Proxy dict with server/username/password (assigned by Phoenix backend)
 
         Returns:
             Dict with campaign results
@@ -314,9 +343,6 @@ class CampaignService:
         cookie_file = None
 
         try:
-            from linkedin.conf import get_proxy_config
-            proxy = get_proxy_config(region)
-
             # Create temporary account config
             config_path, handle = self.create_temporary_account_config(username, password, proxy=proxy)
 
@@ -356,11 +382,15 @@ class CampaignService:
                 AccountSessionRegistry.clear_all()
                 logger.info("All browser sessions closed after campaign completion")
 
+                # Query per-profile outcomes from the campaign DB
+                profiles_detail = _read_profile_states(handle, urls)
+
                 return {
                     "success": True,
                     "message": f"Campaign '{campaign_name}' completed successfully",
                     "campaign_id": campaign_name,
-                    "profiles_processed": len(urls)
+                    "profiles_processed": len(urls),
+                    "profiles": profiles_detail,
                 }
 
             finally:
@@ -629,18 +659,19 @@ class CampaignService:
         cookies: list = None,
         username: str = None,
         password: str = None,
-        region: str = "us",
+        proxy: dict = None,
     ) -> Dict:
         """
         Send a message to a LinkedIn profile
-        
+
         Args:
             url: LinkedIn profile URL to send message to
             message: Message text to send
             cookies: LinkedIn session cookies (preferred method)
             username: LinkedIn username/email (optional if cookies provided)
             password: LinkedIn password (optional if cookies provided)
-            
+            proxy: Proxy dict with server/username/password (assigned by Phoenix backend)
+
         Returns:
             Dict with message sending result
         """
@@ -651,15 +682,12 @@ class CampaignService:
         from linkedin.campaigns.connect_follow_up import INPUT_CSV_PATH
         from linkedin.navigation.enums import MessageStatus
         import linkedin.conf as conf
-        
+
         config_path = None
         cookie_file = None
         session = None
 
         try:
-            from linkedin.conf import get_proxy_config
-            proxy = get_proxy_config(region)
-
             # Create temporary account config
             if cookies:
                 # Generate handle for cookie-based auth
@@ -808,6 +836,103 @@ class CampaignService:
             }
         finally:
             # Clean up temporary files
+            if config_path:
+                self._cleanup_temp_file(config_path)
+            if cookie_file:
+                self._cleanup_temp_file(cookie_file)
+
+    def fetch_conversation(
+        self,
+        url: str,
+        cookies: list = None,
+        username: str = None,
+        password: str = None,
+        proxy: dict = None,
+    ) -> Dict:
+        """Fetch conversation history with a LinkedIn profile."""
+        from linkedin.actions.conversations import get_conversation
+        from linkedin.db.profiles import url_to_public_id
+        from linkedin.sessions.registry import AccountSessionRegistry, SessionKey
+        from linkedin.campaigns.connect_follow_up import INPUT_CSV_PATH
+        import linkedin.conf as conf
+
+        config_path = None
+        cookie_file = None
+        session = None
+
+        try:
+            if cookies:
+                import random, string
+                handle = 'cookie_' + ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+                config_path, _ = self.create_temporary_account_config(handle=handle, proxy=proxy)
+                cookie_file = self.create_temporary_cookies_file(cookies, handle)
+            elif username:
+                handle = username.split('@')[0].replace('.', '_').replace('-', '_')
+                config_path, _ = self.create_temporary_account_config(username, password, handle, proxy=proxy)
+            else:
+                raise ValueError("Either 'cookies' or 'username' must be provided")
+
+            with open(config_path, "r", encoding="utf-8") as f:
+                config_data = yaml.safe_load(f) or {}
+            if cookie_file:
+                config_data['accounts'][handle]['cookie_file'] = str(cookie_file)
+            with open(config_path, "w", encoding="utf-8") as f:
+                yaml.dump(config_data, f, default_flow_style=False)
+
+            from linkedin.conf import SECRETS_PATH as ACTUAL_SECRETS_PATH
+            conf.SECRETS_PATH = config_path
+            with open(config_path, "r", encoding="utf-8") as f:
+                conf._raw_config = yaml.safe_load(f) or {}
+            conf._accounts_config = conf._raw_config.get("accounts", {})
+
+            try:
+                key = SessionKey.make(handle, "fetch_conversation", INPUT_CSV_PATH)
+                session = AccountSessionRegistry.get_or_create(
+                    handle=key.handle,
+                    campaign_name=key.campaign_name,
+                    csv_hash=key.csv_hash,
+                )
+                session.ensure_browser()
+
+                public_identifier = url_to_public_id(url)
+                messages = get_conversation(session, url)
+
+                return {
+                    "success": True,
+                    "url": url,
+                    "public_identifier": public_identifier,
+                    "messages": messages or [],
+                    "count": len(messages) if messages else 0,
+                }
+
+            finally:
+                if session:
+                    try:
+                        session.close()
+                        AccountSessionRegistry.clear_all()
+                    except Exception as e:
+                        logger.warning(f"Error closing session: {e}")
+
+                conf.SECRETS_PATH = ACTUAL_SECRETS_PATH
+                if ACTUAL_SECRETS_PATH.exists():
+                    with open(ACTUAL_SECRETS_PATH, "r", encoding="utf-8") as f:
+                        conf._raw_config = yaml.safe_load(f) or {}
+                    conf._accounts_config = conf._raw_config.get("accounts", {})
+                else:
+                    conf._raw_config = {}
+                    conf._accounts_config = {}
+
+        except Exception as e:
+            logger.error(f"fetch_conversation failed: {e}", exc_info=True)
+            return {
+                "success": False,
+                "url": url,
+                "public_identifier": None,
+                "messages": [],
+                "count": 0,
+                "error": str(e),
+            }
+        finally:
             if config_path:
                 self._cleanup_temp_file(config_path)
             if cookie_file:

@@ -11,6 +11,30 @@ from linkedin.sessions.registry import AccountSessionRegistry, SessionKey
 
 logger = logging.getLogger(__name__)
 
+SELECTORS = {
+    "weekly_limit": 'div[class*="ip-fuse-limit-alert__warning"]',
+    "invite_to_connect": '[aria-label*="Invite"][aria-label*="to connect"]:visible',
+    "error_toast": 'div[data-test-artdeco-toast-item-type="error"]',
+    "more_button": (
+        'button[id*="overflow"]:visible, '
+        'button[aria-label*="More actions"]:visible, '
+        'main button:has-text("More"):visible'
+    ),
+    # After clicking More: aria-label variant (old UI) or plain text "Connect" in dropdown (new UI)
+    "connect_option": 'div[role="button"][aria-label^="Invite"][aria-label*=" to connect"]',
+    # New LinkedIn UI: Connect option inside the More dropdown menu
+    "connect_in_menu": '[role="menu"] >> text="Connect"',
+    "send_now": (
+        'button:has-text("Send now"), '
+        'button:has-text("Send without a note"), '
+        'button[aria-label*="Send without"], '
+        'button[aria-label*="Send invitation"]:not([aria-label*="note"])'
+    ),
+    "add_note": 'button:has-text("Add a note")',
+    "note_textarea": 'textarea#custom-message, textarea[name="message"]',
+    "send_with_note": 'button:has-text("Send"), button[aria-label*="Send invitation"]',
+}
+
 
 def send_connection_request(
         key: SessionKey,
@@ -53,8 +77,11 @@ def send_connection_request(
     else:
         logger.info("Sending connection request WITHOUT note")
         s1 = _connect_direct(session)
+        logger.info("_connect_direct → %s", s1)
         s2 = s1 or _connect_via_more(session)
+        logger.info("_connect_via_more → %s", s2)
         s3 = s2 and _click_without_note(session)
+        logger.info("_click_without_note → %s", s3)
         s4 = s3 and _check_weekly_invitation_limit(session)
         success = s4
 
@@ -64,24 +91,23 @@ def send_connection_request(
 
 
 def _check_weekly_invitation_limit(session):
-    weekly_invitation_limit = session.page.locator('div[class*="ip-fuse-limit-alert__warning"]')
-    if weekly_invitation_limit.count() != 0:
+    if session.page.locator(SELECTORS["weekly_limit"]).count() != 0:
         raise ReachedConnectionLimit("Weekly connection limit pop up appeared")
-
     return True
 
 
 def _connect_direct(session):
     session.wait()
     top_card = get_top_card(session)
-    direct = top_card.locator('button[aria-label*="Invite"][aria-label*="to connect"]:visible')
+    direct = top_card.locator(SELECTORS["invite_to_connect"])
+
     if direct.count() == 0:
         return False
 
     direct.first.click()
     logger.debug("Clicked direct 'Connect' button")
 
-    error = session.page.locator('div[data-test-artdeco-toast-item-type="error"]')
+    error = session.page.locator(SELECTORS["error_toast"])
     if error.count() != 0:
         raise SkipProfile(f"{error.inner_text().strip()}")
 
@@ -89,91 +115,84 @@ def _connect_direct(session):
 
 
 def _connect_via_more(session):
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
     session.wait()
     top_card = get_top_card(session)
 
-    # Fallback: More → Connect
-    more = top_card.locator(
-        'button[id*="overflow"]:visible, '
-        'button[aria-label*="More actions"]:visible'
-    )
+    more = top_card.locator(SELECTORS["more_button"])
+    if more.count() == 0:
+        more = session.page.locator(SELECTORS["more_button"])
+
     if more.count() == 0:
         return False
+
     more.first.click()
 
-    session.wait()
+    menu = session.page.locator('[role="menu"]')
+    try:
+        menu.wait_for(state="visible", timeout=5_000)
+    except PlaywrightTimeoutError:
+        logger.debug("No [role='menu'] appeared after clicking More")
 
-    connect_option = top_card.locator(
-        'div[role="button"][aria-label^="Invite"][aria-label*=" to connect"]'
-    )
+    connect_option = session.page.locator(SELECTORS["connect_option"])
+    if connect_option.count() == 0:
+        connect_option = session.page.locator(SELECTORS["connect_in_menu"])
+
     if connect_option.count() == 0:
         return False
+
     connect_option.first.click()
     logger.debug("Used 'More → Connect' flow")
-
     return True
 
 
 def _click_without_note(session):
     """Click flow: sends connection request instantly without note."""
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
     session.wait()
-
-    # Click "Send now" / "Send without a note"
-    send_btn = session.page.locator(
-        'button:has-text("Send now"), '
-        'button[aria-label*="Send without"], '
-        'button[aria-label*="Send invitation"]:not([aria-label*="note"])'
-    )
-    send_btn.first.click(force=True)
-    session.wait()
-    logger.debug("Connection request submitted (no note)")
-
+    send_btn = session.page.locator(SELECTORS["send_now"])
+    try:
+        send_btn.first.wait_for(state="visible", timeout=8_000)
+        send_btn.first.click(force=True)
+        session.wait()
+        logger.debug("Connection request submitted (no note)")
+    except PlaywrightTimeoutError:
+        return False
     return True
 
 
-# ===================================================================
-# FUTURE: Send with personalized note (just uncomment when ready)
-# ===================================================================
 def _perform_send_invitation_with_note(session, message: str, profile_url: str):
     """
     Full flow with custom note.
     Falls back to sending without note if textarea cannot be located
     (e.g., when user has reached connection note limit).
-    When fallback occurs, navigates back to profile and sends without note.
     """
     session.wait()
     top_card = get_top_card(session)
 
-    direct = top_card.locator('button[aria-label*="Invite"][aria-label*="to connect"]:visible')
+    direct = top_card.locator(SELECTORS["invite_to_connect"])
     if direct.count() > 0:
         direct.first.click()
     else:
-        more = top_card.locator('button[id*="overflow"], button[aria-label*="More actions"]').first
-        more.click()
+        top_card.locator(SELECTORS["more_button"]).first.click()
         session.wait()
-        session.page.locator('div[role="button"][aria-label^="Invite"][aria-label*=" to connect"]').first.click()
+        session.page.locator(SELECTORS["connect_option"]).first.click()
 
     session.wait()
-    
-    # Try to add a note - check if "Add a note" button exists
-    add_note_btn = session.page.locator('button:has-text("Add a note")')
+
+    add_note_btn = session.page.locator(SELECTORS["add_note"])
     try:
-        # Wait for button to be visible before clicking
         add_note_btn.first.wait_for(state="visible", timeout=10000)
         add_note_btn.first.click()
         session.wait()
 
-        # Wait for textarea to be visible and ready before filling
-        # LinkedIn sometimes takes a moment to render the modal and textarea
-        # If user has reached connection note limit, textarea won't appear
-        textarea = session.page.locator('textarea#custom-message, textarea[name="message"]')
+        textarea = session.page.locator(SELECTORS["note_textarea"])
         textarea.first.wait_for(state="visible", timeout=15000)
         textarea.first.fill(message)
         session.wait()
         logger.debug("Filled note (%d chars)", len(message))
 
-        send_btn = session.page.locator('button:has-text("Send"), button[aria-label*="Send invitation"]')
-        send_btn.first.click(force=True)
+        session.page.locator(SELECTORS["send_with_note"]).first.click(force=True)
         session.wait()
         logger.debug("Connection request with note sent")
         return True

@@ -37,40 +37,17 @@ def search_profile(session: "AccountSession", profile: Dict[str, Any]):
     _go_to_profile(session, url, public_identifier)
 
 
-def _initiate_search(session: "AccountSession", full_name: str):
-    """Go to feed and start typing the name in the global search bar."""
+def _initiate_search(session: "AccountSession", keyword: str):
+    """Navigate directly to LinkedIn People search results for *keyword*."""
     page = session.page
-
-    if "feed/" not in page.url:
-        goto_page(
-            session,
-            action=lambda: page.goto("https://www.linkedin.com/feed/?doFeedRefresh=true&nis=true"),
-            expected_url_pattern="feed/",
-            error_message="Failed to reach LinkedIn feed"
-        )
-
-    search_bar = page.locator("//input[contains(@placeholder, 'Search')]")
-    search_bar.click()
-    search_bar.type(full_name, delay=120)
+    params = urlencode({"keywords": keyword, "origin": "GLOBAL_SEARCH_HEADER"})
+    url = f"https://www.linkedin.com/search/results/people/?{params}"
 
     goto_page(
         session,
-        action=lambda: search_bar.press("Enter"),
-        expected_url_pattern="/search/results/",
-        error_message="Failed to reach search results"
-    )
-
-    current = urlparse(page.url)
-    new_path = "/search/results/people/" if "/all/" in current.path else current.path
-    params = parse_qs(current.query)
-    params["page"] = ["1"]
-    new_url = current._replace(path=new_path, query=urlencode(params, doseq=True)).geturl()
-
-    goto_page(
-        session,
-        action=lambda: page.goto(new_url),
+        action=lambda: page.goto(url),
         expected_url_pattern="/search/results/people/",
-        error_message="Failed to switch to People tab"
+        error_message="Failed to reach People search results",
     )
 
 
@@ -91,21 +68,18 @@ def _paginate_to_next_page(session: "AccountSession", page_num: int):
 
 
 def _simulate_human_search(session: "AccountSession", profile: Dict[str, Any]) -> bool:
-    full_name = profile.get("full_name", None)
+    full_name = profile.get("full_name")
     public_identifier = profile.get("public_identifier")
 
-    # Log the incoming profile info (redact sensitive data if needed)
-    logger.debug(
-        "Starting human search simulation for profile - "
-        f"full_name: '{full_name}', public_identifier: '{public_identifier}'"
-    )
-
+    # Reconstruct full_name from parts if missing
     if not full_name:
-        logger.error(
-            f"Missing full_name in profile. public_identifier was: '{public_identifier}'. "
-            "Cannot perform human search simulation without a name."
-        )
-        return False
+        first = profile.get("first_name", "").strip()
+        last = profile.get("last_name", "").strip()
+        if first or last:
+            full_name = f"{first} {last}".strip()
+        else:
+            logger.error("No name available for %s", public_identifier)
+            return False
 
     if not public_identifier:
         logger.error(

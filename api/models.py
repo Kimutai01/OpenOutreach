@@ -5,6 +5,13 @@ from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Dict, Any
 
 
+class ProxyConfig(BaseModel):
+    """Proxy configuration passed from the Phoenix backend"""
+    server: str = Field(..., description="Proxy server URL (e.g. 'geo.iproyal.com:12321')")
+    username: str = Field(..., description="Proxy username")
+    password: str = Field(..., description="Proxy password")
+
+
 class CampaignRequest(BaseModel):
     """Request model for starting a campaign"""
     username: Optional[str] = Field(None, description="LinkedIn username/email (deprecated, use cookies instead)")
@@ -13,7 +20,8 @@ class CampaignRequest(BaseModel):
     urls: List[str] = Field(..., description="List of LinkedIn profile URLs to target")
     campaign_name: Optional[str] = Field(default="connect_follow_up", description="Campaign name")
     note: Optional[str] = Field(None, description="Optional note to include with connection requests (max 300 chars)")
-    region: Optional[str] = Field(default="us", description="ISO country code for proxy routing (e.g. 'us', 'gb', 'de')")
+    proxy: Optional[ProxyConfig] = Field(None, description="Proxy credentials assigned by the Phoenix backend")
+    callback_url: str = Field(..., description="URL to POST results to when the job completes")
 
     @field_validator('cookies', 'username', mode='before')
     @classmethod
@@ -45,7 +53,12 @@ class CampaignRequest(BaseModel):
                     "https://www.linkedin.com/in/janedoe"
                 ],
                 "campaign_name": "connect_follow_up",
-                "note": "Hi! I'd love to connect and discuss opportunities in the tech industry."
+                "note": "Hi! I'd love to connect and discuss opportunities in the tech industry.",
+                "proxy": {
+                    "server": "geo.iproyal.com:12321",
+                    "username": "myuser_country-us_session-abc123_lifetime-30m",
+                    "password": "mypassword"
+                }
             }
         }
 
@@ -93,7 +106,8 @@ class MessageRequest(BaseModel):
     password: Optional[str] = Field(None, description="LinkedIn password (deprecated, use cookies instead)")
     url: str = Field(..., description="LinkedIn profile URL to send message to")
     message: str = Field(..., description="Message text to send (required)")
-    region: Optional[str] = Field(default="us", description="ISO country code for proxy routing (e.g. 'us', 'gb', 'de')")
+    proxy: Optional[ProxyConfig] = Field(None, description="Proxy credentials assigned by the Phoenix backend")
+    callback_url: str = Field(..., description="URL to POST results to when the job completes")
 
     class Config:
         json_schema_extra = {
@@ -109,7 +123,12 @@ class MessageRequest(BaseModel):
                     }
                 ],
                 "url": "https://www.linkedin.com/in/johndoe",
-                "message": "Hi! I'd love to connect and discuss opportunities."
+                "message": "Hi! I'd love to connect and discuss opportunities.",
+                "proxy": {
+                    "server": "geo.iproyal.com:12321",
+                    "username": "myuser_country-us_session-abc123_lifetime-30m",
+                    "password": "mypassword"
+                }
             }
         }
 
@@ -121,3 +140,13 @@ class MessageResponse(BaseModel):
     url: Optional[str] = None
     public_identifier: Optional[str] = None
     status: Optional[str] = None
+
+
+class ConversationRequest(BaseModel):
+    """Request model for fetching conversation history"""
+    cookies: Optional[List[Dict[str, Any]]] = Field(None, description="LinkedIn session cookies")
+    username: Optional[str] = Field(None)
+    password: Optional[str] = Field(None)
+    url: str = Field(..., description="LinkedIn profile URL to fetch conversation from")
+    proxy: Optional[ProxyConfig] = Field(None)
+    callback_url: str = Field(..., description="URL to POST results to when the job completes")

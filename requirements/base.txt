@@ -8,3 +8,6 @@ pandas
 langchain
 langchain-openai
 jinja2
+pika
+httpx
+pyyaml

@@ -55,18 +55,18 @@ def _build_proxy_config(config: dict, handle: str) -> dict | None:
 
     Supports two formats in accounts.secrets.yaml:
 
-      # Simple URL string:
-      proxy: "http://user:pass@brd.superproxy.io:33335"
+      # Simple URL string (session already embedded):
+      proxy: "http://user:pass@geo.iproyal.com:12321"
 
-      # Structured (BrightData sticky session recommended):
+      # Structured (IPRoyal sticky session recommended):
       proxy:
-        server: "http://brd.superproxy.io:33335"
-        username: "brd-customer-xxx-zone-linkedin_scraper1"
-        password: "yourpassword"
+        server: "geo.iproyal.com:12321"
+        username: "myuser_country-us"
+        password: "mypassword"
 
     When using structured format without an explicit session suffix in username,
     a sticky session ID derived from the account handle is appended automatically
-    so each account consistently uses the same IP.
+    (_session-{handle}_lifetime-30m) so each account consistently uses the same IP.
     """
     raw = config.get("proxy")
     if not raw:
@@ -77,11 +77,15 @@ def _build_proxy_config(config: dict, handle: str) -> dict | None:
 
     if isinstance(raw, dict):
         username = raw.get("username", "")
-        # Append sticky session suffix if not already present
-        if username and "-session-" not in username:
-            username = f"{username}-session-{handle}"
+        server = raw.get("server", "")
+        # Only append IPRoyal sticky session suffix for ISP proxies (isp.iproyal.com)
+        if username and "_session-" not in username and "isp.iproyal.com" in server:
+            username = f"{username}_session-{handle}_lifetime-30m"
+        # Ensure server has a scheme (Playwright requires it)
+        if server and not server.startswith(("http://", "https://", "socks5://")):
+            server = f"http://{server}"
         return {
-            "server": raw["server"],
+            "server": server,
             "username": username,
             "password": raw.get("password", ""),
         }
@@ -93,7 +97,7 @@ def _build_proxy_config(config: dict, handle: str) -> dict | None:
 def build_playwright(storage_state=None, proxy=None):
     logger.debug("Launching Playwright")
     playwright = sync_playwright().start()
-    browser = playwright.chromium.launch(headless=True, slow_mo=200)
+    browser = playwright.chromium.launch(headless=False, slow_mo=200)
     context = browser.new_context(storage_state=storage_state, proxy=proxy)
     Stealth().apply_stealth_sync(context)
     page = context.new_page()
@@ -111,7 +115,7 @@ def init_playwright_session(session: "AccountSession", handle: str):
 
     proxy = _build_proxy_config(config, handle)
     if proxy:
-        logger.info("Using proxy → %s", proxy["server"])
+        logger.info("Using proxy → %s (user: %s)", proxy["server"], proxy.get("username", "none"))
 
     session.page, session.context, session.browser, session.playwright = build_playwright(
         storage_state=storage_state,
@@ -126,9 +130,9 @@ def init_playwright_session(session: "AccountSession", handle: str):
     else:
         goto_page(
             session,
-            action=lambda: session.page.goto(LINKEDIN_FEED_URL),
+            action=lambda: session.page.goto(LINKEDIN_FEED_URL, timeout=90_000),
             expected_url_pattern="/feed",
-            timeout=30_000,
+            timeout=90_000,
             error_message="Saved session invalid",
             to_scrape=False
         )

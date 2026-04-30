@@ -1,496 +1,247 @@
 """
 FastAPI wrapper for LinkedIn OpenOutreach automation
 
-This API provides endpoints to run LinkedIn outreach campaigns
-by accepting username, password, and target URLs via HTTP requests.
+Requests are queued in RabbitMQ and processed by worker/worker.py.
+Each endpoint returns a job UUID immediately (HTTP 202).
+When the job finishes the worker POSTs the result to callback_url.
 """
 import asyncio
+import json
 import logging
+import os
+import uuid
 from contextlib import asynccontextmanager
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
-import multiprocessing
+from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+import pika
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.models import CampaignRequest, CampaignResponse, HealthResponse, StatusResponse, MessageRequest, MessageResponse
-from api.service import CampaignService
+from api.models import (
+    CampaignRequest,
+    ConversationRequest,
+    HealthResponse,
+    MessageRequest,
+)
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
-# Initialize service
-campaign_service = CampaignService()
+RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
+QUEUE_NAME   = os.getenv("QUEUE_NAME", "openoutreach_jobs")
 
-# Standalone functions for ProcessPoolExecutor (must be picklable)
-# These functions are defined at module level so they can be pickled
-def _run_campaign_wrapper(urls, campaign_name, username, password, cookies, message, region):
-    """Wrapper function for ProcessPoolExecutor - must be at module level"""
-    service = CampaignService()
-    return service.run_campaign(urls, campaign_name, username, password, cookies, message, region)
-
-def _check_status_wrapper(urls, cookies, username, password, region):
-    """Wrapper function for ProcessPoolExecutor - must be at module level"""
-    service = CampaignService()
-    return service.check_real_time_connection_status(urls, cookies, username, password, region)
-
-def _send_message_wrapper(url, message, cookies, username, password, region):
-    """Wrapper function for ProcessPoolExecutor - must be at module level"""
-    service = CampaignService()
-    return service.send_message(url, message, cookies, username, password, region)
-
-# Executor for running sync Playwright code
-# Note: Each browser instance uses ~100-200MB RAM
-# 
-# IMPORTANT: We use ProcessPoolExecutor instead of ThreadPoolExecutor
-# because Playwright's sync API detects asyncio event loops even in threads.
-# ProcessPoolExecutor provides complete isolation from the asyncio context.
-#
-# Adjust max_workers based on available resources:
-# - 4GB RAM server: max_workers=5-8
-# - 8GB RAM server: max_workers=10-15
-# - 16GB+ RAM server: max_workers=20-30
-# For 100 concurrent users, consider horizontal scaling (multiple instances)
-import os
-MAX_WORKERS = int(os.getenv("MAX_WORKERS", "5"))  # Default to 5 for processes (more resource-intensive)
-USE_PROCESS_POOL = os.getenv("USE_PROCESS_POOL", "true").lower() == "true"
-
-if USE_PROCESS_POOL:
-    # ProcessPoolExecutor provides complete isolation - no asyncio context
-    # Required for Playwright sync API to work without errors
-    executor = ProcessPoolExecutor(max_workers=MAX_WORKERS)
-    logger.info(f"Using ProcessPoolExecutor with {MAX_WORKERS} workers for Playwright isolation")
-else:
-    # ThreadPoolExecutor (legacy - may have asyncio issues)
-    executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
-    logger.info(f"Using ThreadPoolExecutor with {MAX_WORKERS} workers (may have asyncio issues)")
+# Thread pool used only for blocking pika publish calls (publish is fast, ~1 ms)
+_publish_executor = ThreadPoolExecutor(max_workers=4)
 
 
-def run_sync_playwright(func, *args, **kwargs):
-    """
-    Wrapper to run Playwright sync code.
-    
-    If using ProcessPoolExecutor: No wrapper needed - processes are completely isolated
-    If using ThreadPoolExecutor: Clear event loop (may not always work)
-    
-    Note: ProcessPoolExecutor is recommended for Playwright to avoid asyncio detection issues.
-    """
-    # If we're in a process (ProcessPoolExecutor), we don't need to do anything
-    # Processes are completely isolated from the asyncio event loop
-    
-    # If we're in a thread (ThreadPoolExecutor), try to clear the event loop
-    # This may not always work, which is why ProcessPoolExecutor is recommended
-    import asyncio
+def _get_rabbit_channel():
+    """Open a fresh connection + channel. Called inside a thread."""
+    params = pika.URLParameters(RABBITMQ_URL)
+    conn   = pika.BlockingConnection(params)
+    ch     = conn.channel()
+    ch.queue_declare(queue=QUEUE_NAME, durable=True)
+    return conn, ch
+
+
+def _publish_blocking(payload: dict) -> None:
+    """Publish one job message to RabbitMQ. Runs in a thread."""
+    conn, ch = _get_rabbit_channel()
     try:
-        # Try to clear event loop (only works in threads, not needed in processes)
-        asyncio.set_event_loop(None)
-    except Exception:
-        # If this fails, we're probably in a process (which is fine)
-        pass
-    
-    # Run the actual function
-    return func(*args, **kwargs)
+        ch.basic_publish(
+            exchange="",
+            routing_key=QUEUE_NAME,
+            body=json.dumps(payload),
+            properties=pika.BasicProperties(
+                delivery_mode=2,          # persistent
+                content_type="application/json",
+            ),
+        )
+    finally:
+        conn.close()
+
+
+async def publish_job(payload: dict) -> None:
+    """Async wrapper — runs the blocking publish in a thread so FastAPI doesn't stall."""
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(_publish_executor, _publish_blocking, payload)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Lifespan events for the application"""
-    logger.info("Starting OpenOutreach API...")
+    logger.info("Starting OpenOutreach API…")
     yield
-    logger.info("Shutting down OpenOutreach API...")
-    executor.shutdown(wait=True)
-    # For ProcessPoolExecutor, we need to explicitly shutdown
-    if isinstance(executor, ProcessPoolExecutor):
-        executor.shutdown(wait=True)
+    logger.info("Shutting down OpenOutreach API…")
+    _publish_executor.shutdown(wait=False)
 
 
-# Initialize FastAPI app
 app = FastAPI(
     title="OpenOutreach API",
-    description="API for automating LinkedIn outreach campaigns",
-    version="1.0.0",
+    description="Queues LinkedIn automation jobs via RabbitMQ.",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
-# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Adjust this in production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
+# ---------------------------------------------------------------------------
+# Health
+# ---------------------------------------------------------------------------
+
 @app.get("/", response_model=HealthResponse)
-async def root():
-    """Root endpoint - health check"""
-    return HealthResponse(
-        status="healthy",
-        version="1.0.0"
-    )
-
-
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
-    """Health check endpoint"""
-    return HealthResponse(
-        status="healthy",
-        version="1.0.0"
-    )
+    return HealthResponse(status="healthy", version="2.0.0")
 
 
-@app.post("/campaign/run", response_model=CampaignResponse)
-async def run_campaign(request: CampaignRequest, background_tasks: BackgroundTasks):
+# ---------------------------------------------------------------------------
+# Campaign (connection requests)
+# ---------------------------------------------------------------------------
+
+@app.post("/campaign/run", status_code=202)
+async def run_campaign(request: CampaignRequest):
     """
-    Run a LinkedIn outreach campaign
-
-    This endpoint accepts LinkedIn credentials and a list of profile URLs,
-    then runs the campaign using the existing OpenOutreach functionality.
-
-    Args:
-        request: Campaign request containing username, password, and URLs
-        background_tasks: FastAPI background tasks
-
-    Returns:
-        Campaign response with status and results
+    Queue a connection-request campaign.
+    Returns job_id immediately. Result is POSTed to callback_url when done.
     """
-    try:
-        logger.info(f"Received campaign request for user: {request.username}")
-        logger.info(f"Target profiles: {len(request.urls)}")
+    if not request.urls:
+        raise HTTPException(status_code=400, detail="No URLs provided.")
+    if len(request.urls) > 100:
+        raise HTTPException(status_code=400, detail="Maximum 100 URLs per request.")
 
-        # Validate input
-        if not request.urls:
-            raise HTTPException(
-                status_code=400,
-                detail="No URLs provided. Please provide at least one LinkedIn profile URL."
-            )
+    job_id = str(uuid.uuid4())
+    payload = {
+        "job_id":        job_id,
+        "job_type":      "campaign",
+        "callback_url":  request.callback_url,
+        "urls":          request.urls,
+        "campaign_name": request.campaign_name,
+        "username":      request.username,
+        "password":      request.password,
+        "cookies":       request.cookies,
+        "note":          request.note,
+        "proxy":         request.proxy.model_dump() if request.proxy else None,
+    }
 
-        if len(request.urls) > 100:
-            raise HTTPException(
-                status_code=400,
-                detail="Too many URLs. Maximum 100 profiles per request."
-            )
-
-        # Run campaign in executor to avoid asyncio/Playwright conflict
-        loop = asyncio.get_event_loop()
-        if USE_PROCESS_POOL:
-            # ProcessPoolExecutor - use standalone function (no wrapper needed)
-            result = await loop.run_in_executor(
-                executor,
-                _run_campaign_wrapper,
-                request.urls,
-                request.campaign_name,
-                request.username,
-                request.password,
-                request.cookies,
-                request.note,
-                request.region,
-            )
-        else:
-            # ThreadPoolExecutor - use wrapper to clear event loop
-            result = await loop.run_in_executor(
-                executor,
-                run_sync_playwright,
-                campaign_service.run_campaign,
-                request.urls,
-                request.campaign_name,
-                request.username,
-                request.password,
-                request.cookies,
-                request.note,
-                request.region,
-            )
-
-        if result["success"]:
-            return CampaignResponse(**result)
-        else:
-            raise HTTPException(
-                status_code=500,
-                detail=result["message"]
-            )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Unexpected error in run_campaign: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Internal server error: {str(e)}"
-        )
+    await publish_job(payload)
+    logger.info("Queued campaign job %s (%d URLs)", job_id, len(request.urls))
+    return {"job_id": job_id, "status": "queued"}
 
 
-@app.post("/campaign/run-async", response_model=CampaignResponse)
-async def run_campaign_async(request: CampaignRequest, background_tasks: BackgroundTasks):
-    """
-    Run a LinkedIn outreach campaign in the background
+# ---------------------------------------------------------------------------
+# Message sending
+# ---------------------------------------------------------------------------
 
-    This endpoint starts the campaign in a background task and returns immediately.
-    Use this for long-running campaigns.
-
-    Args:
-        request: Campaign request containing username, password, and URLs
-        background_tasks: FastAPI background tasks
-
-    Returns:
-        Campaign response with acceptance status
-    """
-    try:
-        logger.info(f"Received async campaign request for user: {request.username}")
-
-        # Validate input
-        if not request.urls:
-            raise HTTPException(
-                status_code=400,
-                detail="No URLs provided. Please provide at least one LinkedIn profile URL."
-            )
-
-        # Run campaign in background using executor
-        # We need to use asyncio.run_in_executor in the background task
-        # to properly execute the campaign in the executor
-        async def run_campaign_background():
-            """Background task that runs the campaign in the executor"""
-            loop = asyncio.get_event_loop()
-            try:
-                if USE_PROCESS_POOL:
-                    # ProcessPoolExecutor - use standalone function
-                    await loop.run_in_executor(
-                        executor,
-                        _run_campaign_wrapper,
-                        request.urls,
-                        request.campaign_name,
-                        request.username,
-                        request.password,
-                        request.cookies,
-                        request.note,
-                        request.region,
-                    )
-                else:
-                    # ThreadPoolExecutor - use wrapper to clear event loop
-                    await loop.run_in_executor(
-                        executor,
-                        run_sync_playwright,
-                        campaign_service.run_campaign,
-                        request.urls,
-                        request.campaign_name,
-                        request.username,
-                        request.password,
-                        request.cookies,
-                        request.note,
-                        request.region,
-                    )
-                logger.info(f"Background campaign '{request.campaign_name}' completed")
-            except Exception as e:
-                logger.error(f"Error in background campaign '{request.campaign_name}': {e}", exc_info=True)
-        
-        background_tasks.add_task(run_campaign_background)
-
-        return CampaignResponse(
-            success=True,
-            message=f"Campaign '{request.campaign_name}' started in background",
-            campaign_id=request.campaign_name,
-            profiles_processed=None  # Won't know until complete
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Unexpected error in run_campaign_async: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Internal server error: {str(e)}"
-        )
-
-
-@app.post("/status")
-async def get_status(request: CampaignRequest):
-    """
-    Check the status of LinkedIn profiles
-
-    Args:
-        request: Contains cookies and URLs to check status for
-
-    Returns:
-        Status information for the profiles
-
-    Example:
-        POST /status
-        {
-            "cookies": [{"name": "li_at", "value": "...", ...}],
-            "urls": ["https://www.linkedin.com/in/johndoe"]
-        }
-    """
-    try:
-        logger.info(f"Status check for {len(request.urls)} profile(s)")
-
-        # Validate input
-        if not request.urls:
-            raise HTTPException(
-                status_code=400,
-                detail="At least one URL is required"
-            )
-
-        if not request.cookies and not request.username:
-            raise HTTPException(
-                status_code=400,
-                detail="Either 'cookies' or 'username' must be provided"
-            )
-
-        # Check real-time status by navigating to LinkedIn
-        loop = asyncio.get_event_loop()
-        if USE_PROCESS_POOL:
-            # ProcessPoolExecutor - use standalone function (no wrapper needed)
-            results = await loop.run_in_executor(
-                executor,
-                _check_status_wrapper,
-                request.urls,
-                request.cookies,
-                request.username,
-                request.password,
-                request.region,
-            )
-        else:
-            # ThreadPoolExecutor - use wrapper to clear event loop
-            results = await loop.run_in_executor(
-                executor,
-                run_sync_playwright,
-                campaign_service.check_real_time_connection_status,
-                request.urls,
-                request.cookies,
-                request.username,
-                request.password,
-                request.region,
-            )
-
-        # Return single result or list depending on input
-        return results[0] if len(results) == 1 else results
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Unexpected error in get_status: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Internal server error: {str(e)}"
-        )
-
-
-@app.post("/message/send", response_model=MessageResponse)
+@app.post("/message/send", status_code=202)
 async def send_message(request: MessageRequest):
     """
-    Send a message to a LinkedIn profile
-    
-    This endpoint sends a message to a connected LinkedIn profile.
-    Only profiles that are already connected will receive messages.
-    Each request sends one message to one profile.
-    
-    Args:
-        request: Message request containing cookies, URL, and message text
-        
-    Returns:
-        Message response with sending result
-        
-    Example:
-        POST /message/send
-        {
-            "cookies": [{"name": "li_at", "value": "...", ...}],
-            "url": "https://www.linkedin.com/in/johndoe",
-            "message": "Hi! I'd love to connect."
-        }
+    Queue a message-send job.
+    Returns job_id immediately. Result is POSTed to callback_url when done.
     """
-    try:
-        logger.info(f"Received message request for profile: {request.url}")
-        logger.info(f"Message length: {len(request.message)} characters")
-        
-        # Validate authentication
-        has_cookies = request.cookies and len(request.cookies) > 0
-        has_credentials = request.username and request.password
-        
-        if not has_cookies and not has_credentials:
-            raise HTTPException(
-                status_code=400,
-                detail="Either 'cookies' or both 'username' and 'password' must be provided"
-            )
-        
-        # Validate input
-        if not request.url or not request.url.strip():
-            raise HTTPException(
-                status_code=400,
-                detail="URL is required and cannot be empty."
-            )
-        
-        if not request.message or not request.message.strip():
-            raise HTTPException(
-                status_code=400,
-                detail="Message is required and cannot be empty."
-            )
-        
-        # Send message in executor to avoid asyncio/Playwright conflict
-        loop = asyncio.get_event_loop()
-        try:
-            if USE_PROCESS_POOL:
-                # ProcessPoolExecutor - use standalone function (no wrapper needed)
-                logger.debug("Submitting message send to ProcessPoolExecutor")
-                result = await loop.run_in_executor(
-                    executor,
-                    _send_message_wrapper,
-                    request.url,
-                    request.message,
-                    request.cookies,
-                    request.username,
-                    request.password,
-                    request.region,
-                )
-                logger.debug(f"Received result from ProcessPoolExecutor: {result}")
-            else:
-                # ThreadPoolExecutor - use wrapper to clear event loop
-                logger.debug("Submitting message send to ThreadPoolExecutor")
-                result = await loop.run_in_executor(
-                    executor,
-                    run_sync_playwright,
-                    campaign_service.send_message,
-                    request.url,
-                    request.message,
-                    request.cookies,
-                    request.username,
-                    request.password,
-                    request.region,
-                )
-                logger.debug(f"Received result from ThreadPoolExecutor: {result}")
-            
-            logger.info(f"Message send completed, returning response: success={result.get('success')}, status={result.get('status')}")
-            return MessageResponse(**result)
-        except Exception as executor_error:
-            logger.error(f"Error in executor for send_message: {executor_error}", exc_info=True)
-            # Return error response if executor fails
-            return MessageResponse(
-                success=False,
-                message=f"Executor error: {str(executor_error)}",
-                url=request.url,
-                public_identifier=None,
-                status="ERROR"
-            )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Unexpected error in send_messages: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Internal server error: {str(e)}"
-        )
+    if not request.url:
+        raise HTTPException(status_code=400, detail="URL is required.")
+    if not request.message:
+        raise HTTPException(status_code=400, detail="Message is required.")
+
+    has_auth = (request.cookies and len(request.cookies) > 0) or (request.username and request.password)
+    if not has_auth:
+        raise HTTPException(status_code=400, detail="Either cookies or username/password required.")
+
+    job_id = str(uuid.uuid4())
+    payload = {
+        "job_id":       job_id,
+        "job_type":     "message",
+        "callback_url": request.callback_url,
+        "url":          request.url,
+        "message":      request.message,
+        "username":     request.username,
+        "password":     request.password,
+        "cookies":      request.cookies,
+        "proxy":        request.proxy.model_dump() if request.proxy else None,
+    }
+
+    await publish_job(payload)
+    logger.info("Queued message job %s → %s", job_id, request.url)
+    return {"job_id": job_id, "status": "queued"}
+
+
+# ---------------------------------------------------------------------------
+# Connection status check
+# ---------------------------------------------------------------------------
+
+@app.post("/status", status_code=202)
+async def get_status(request: CampaignRequest):
+    """
+    Queue a real-time connection-status check.
+    Returns job_id immediately. Result is POSTed to callback_url when done.
+    """
+    if not request.urls:
+        raise HTTPException(status_code=400, detail="At least one URL is required.")
+
+    has_auth = (request.cookies and len(request.cookies) > 0) or request.username
+    if not has_auth:
+        raise HTTPException(status_code=400, detail="Either cookies or username required.")
+
+    job_id = str(uuid.uuid4())
+    payload = {
+        "job_id":       job_id,
+        "job_type":     "status",
+        "callback_url": request.callback_url,
+        "urls":         request.urls,
+        "username":     request.username,
+        "password":     request.password,
+        "cookies":      request.cookies,
+        "proxy":        request.proxy.model_dump() if request.proxy else None,
+    }
+
+    await publish_job(payload)
+    logger.info("Queued status job %s (%d URLs)", job_id, len(request.urls))
+    return {"job_id": job_id, "status": "queued"}
+
+
+# ---------------------------------------------------------------------------
+# Conversation history
+# ---------------------------------------------------------------------------
+
+@app.post("/messages/get", status_code=202)
+async def get_messages(request: ConversationRequest):
+    """
+    Queue a conversation-fetch job.
+    Returns job_id immediately. Result is POSTed to callback_url when done.
+    """
+    if not request.url:
+        raise HTTPException(status_code=400, detail="URL is required.")
+
+    has_auth = (request.cookies and len(request.cookies) > 0) or request.username
+    if not has_auth:
+        raise HTTPException(status_code=400, detail="Either cookies or username required.")
+
+    job_id = str(uuid.uuid4())
+    payload = {
+        "job_id":       job_id,
+        "job_type":     "conversation",
+        "callback_url": request.callback_url,
+        "url":          request.url,
+        "username":     request.username,
+        "password":     request.password,
+        "cookies":      request.cookies,
+        "proxy":        request.proxy.model_dump() if request.proxy else None,
+    }
+
+    await publish_job(payload)
+    logger.info("Queued conversation job %s -> %s", job_id, request.url)
+    return {"job_id": job_id, "status": "queued"}
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(
-        "api.main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
-        log_level="info"
-    )
+    uvicorn.run("api.main:app", host="0.0.0.0", port=8000, reload=True, log_level="info")

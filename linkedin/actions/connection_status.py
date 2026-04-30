@@ -53,7 +53,7 @@ def get_connection_status(
         return ProfileState.CONNECTED
 
     # 3a. Connect button visible?
-    invite_btn = top_card.locator('button[aria-label*="Invite"][aria-label*="to connect"]:visible')
+    invite_btn = top_card.locator('[aria-label*="Invite"][aria-label*="to connect"]:visible')
     if invite_btn.count() > 0:
         logger.debug("Found 'Connect' button → NOT_CONNECTED")
         return ProfileState.ENRICHED

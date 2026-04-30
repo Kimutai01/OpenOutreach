@@ -32,7 +32,7 @@ def goto_page(session: "AccountSession",
 
     current = unquote(page.url)
     if expected_url_pattern not in current:
-        raise RuntimeError(f"{error_message} → expected '{expected_url_pattern}' | got '{current}'")
+        raise RuntimeError(f"{error_message} -> expected '{expected_url_pattern}' | got '{current}'")
 
     logger.debug("Navigated to %s", page.url)
     if OPPORTUNISTIC_SCRAPING:
@@ -72,16 +72,25 @@ def get_top_card(session):
     if top_card.count() == 0:
         top_card = session.page.locator('section:has(> div[class*="pv-top-card"])')
 
+    # New LinkedIn UI (2025+): componentkey ending in "Topcard"
+    if top_card.count() == 0:
+        top_card = session.page.locator('section[componentkey$="Topcard"]')
+
+    # Final fallback: new LinkedIn UI uses random class names — scope to <main>
+    # so we still avoid nav/sidebar but don't skip valid profiles
+    if top_card.count() == 0:
+        top_card = session.page.locator('main')
+
     if top_card.count() == 0:
         logger.info("Skipping profile")
         raise SkipProfile("Top Card section not found")
 
-    return top_card.first  # there’s always only one
+    return top_card.first  # there's always only one
 
 
-def save_page(session: "AccountSession", profile: dict, ):
-    filepath = FIXTURE_PAGES_DIR / f"{profile.get("public_identifier")}.html"
+def save_page(session: "AccountSession", profile: dict):
+    filepath = FIXTURE_PAGES_DIR / f"{profile.get('public_identifier')}.html"
     html_content = session.page.content()
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(html_content)
-    logger.info("Saved ambiguous connection status page → %s", filepath)
+    logger.info("Saved ambiguous connection status page -> %s", filepath)
