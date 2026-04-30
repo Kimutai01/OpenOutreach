@@ -188,6 +188,17 @@ class CampaignService:
             if cookie_file:
                 self._cleanup_temp_file(cookie_file)
 
+    @staticmethod
+    def _stable_handle_from_cookies(cookies) -> str:
+        """Derive a stable, repeatable handle from the li_at cookie value."""
+        import hashlib
+        cookie_list = cookies if isinstance(cookies, list) else (cookies or {}).get("cookies", [])
+        for c in cookie_list:
+            if c.get("name") == "li_at":
+                return "li_" + hashlib.md5(c["value"].encode()).hexdigest()[:12]
+        import random, string
+        return "cookie_" + "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
+
     def create_temporary_account_config(self, username: str = None, password: str = None, handle: str = None, proxy: dict = None) -> tuple[Path, str]:
         """
         Create a temporary account configuration file
@@ -205,10 +216,8 @@ class CampaignService:
                 # Use a sanitized version of username as handle
                 handle = username.split('@')[0].replace('.', '_').replace('-', '_')
             else:
-                # Generate random handle for cookie-based auth
-                import random
-                import string
-                handle = 'cookie_' + ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+                # Stable handle derived from li_at — same account always gets the same file
+                handle = "cookie_pending"  # placeholder; callers that have cookies override below
 
         from linkedin.conf import COOKIES_DIR
         
@@ -340,16 +349,27 @@ class CampaignService:
         """
         config_path = None
         csv_path = None
-        cookie_file = None
+        handle = None
 
         try:
-            # Create temporary account config
-            config_path, handle = self.create_temporary_account_config(username, password, proxy=proxy)
+            # Derive a stable handle so the cookie file is reused across campaigns
+            if cookies and not username:
+                stable_handle = self._stable_handle_from_cookies(cookies)
+            else:
+                stable_handle = None  # create_temporary_account_config will derive from username
 
-            # If cookies provided, create cookie file
-            if cookies:
-                cookie_file = self.create_temporary_cookies_file(cookies, handle)
-                logger.info(f"Using cookie-based authentication for {handle}")
+            config_path, handle = self.create_temporary_account_config(username, password, handle=stable_handle, proxy=proxy)
+
+            # Only write cookies from caller if no persistent proxy-bound session exists.
+            # Once a session is created via a proxy login it is reused across campaigns so
+            # that li_at stays bound to the proxy IP and LinkedIn doesn't reject the session.
+            from linkedin.conf import COOKIES_DIR
+            persistent_cookie_file = COOKIES_DIR / f"{handle}.json"
+            if cookies and not persistent_cookie_file.exists():
+                self.create_temporary_cookies_file(cookies, handle)
+                logger.info(f"No existing session for {handle} — bootstrapping from provided cookies")
+            elif persistent_cookie_file.exists():
+                logger.info(f"Reusing existing proxy-bound session for {handle}")
 
             csv_path = self.create_temporary_urls_csv(urls)
 
@@ -405,16 +425,24 @@ class CampaignService:
                     conf._raw_config = {}
                     conf._accounts_config = {}
 
-                # Clean up temporary files
+                # Clean up temporary files (cookie file is intentionally kept — it's a persistent proxy-bound session)
                 if config_path:
                     self._cleanup_temp_file(config_path)
                 if csv_path:
                     self._cleanup_temp_file(csv_path)
-                if cookie_file:
-                    self._cleanup_temp_file(cookie_file)
 
         except Exception as e:
             logger.error(f"Campaign failed: {str(e)}", exc_info=True)
+
+            # 401 means the session is tied to the wrong IP. Delete the stale cookie file
+            # so the next campaign triggers a fresh proxy login and creates a new session
+            # that is bound to the proxy IP.
+            if handle and "401 Unauthorized" in str(e):
+                from linkedin.conf import COOKIES_DIR
+                stale = COOKIES_DIR / f"{handle}.json"
+                if stale.exists():
+                    stale.unlink()
+                    logger.info(f"Deleted stale session for {handle} — next campaign will re-login via proxy")
 
             # Close browsers even on error to prevent resource leaks
             try:
@@ -429,8 +457,6 @@ class CampaignService:
                 self._cleanup_temp_file(config_path)
             if csv_path:
                 self._cleanup_temp_file(csv_path)
-            if cookie_file:
-                self._cleanup_temp_file(cookie_file)
 
             return {
                 "success": False,

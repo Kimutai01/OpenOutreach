@@ -29,6 +29,8 @@ services:
     command: uvicorn api.main:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
+    volumes:
+      - ./assets:/app/assets
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -45,6 +47,8 @@ services:
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/
       MAX_WORKERS: ${MAX_WORKERS:-10}
     command: /start-worker
+    volumes:
+      - ./assets:/app/assets
     depends_on:
       rabbitmq:
         condition: service_healthy

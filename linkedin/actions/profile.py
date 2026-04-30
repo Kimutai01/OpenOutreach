@@ -40,6 +40,11 @@ def scrape_profile(key: SessionKey, profile: dict):
         )
     except Exception as nav_err:
         logger.debug("Profile navigation before API call failed: %s", nav_err)
+        # Wait for any in-progress navigation/redirect to settle
+        try:
+            session.page.wait_for_load_state("domcontentloaded", timeout=5_000)
+        except Exception:
+            pass
 
     api = PlaywrightLinkedinAPI(session=session)
 
