@@ -20,9 +20,26 @@ def scrape_profile(key: SessionKey, profile: dict):
         csv_hash=key.csv_hash,
     )
 
-    # ── Existing enrichment logic (100% unchanged) ──
     session.ensure_browser()
     session.wait()
+
+    # Navigate to the profile page before calling the Voyager API.
+    # This ensures LinkedIn has set JSESSIONID (needed as csrf-token) in the
+    # browser context before we make the API request.
+    from linkedin.navigation.utils import goto_page
+    from linkedin.db.profiles import url_to_public_id
+    public_identifier = url_to_public_id(url)
+    try:
+        goto_page(
+            session,
+            action=lambda: session.page.goto(url, timeout=30_000),
+            expected_url_pattern=f"/in/{public_identifier}",
+            timeout=30_000,
+            error_message=f"Failed to navigate to profile: {url}",
+            to_scrape=False,
+        )
+    except Exception as nav_err:
+        logger.debug("Profile navigation before API call failed: %s", nav_err)
 
     api = PlaywrightLinkedinAPI(session=session)
 

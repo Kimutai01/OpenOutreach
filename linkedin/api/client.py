@@ -25,6 +25,10 @@ class PlaywrightLinkedinAPI:
         cookies = self.context.cookies()
         cookies_dict = {c['name']: c['value'] for c in cookies}
         jsessionid = cookies_dict.get('JSESSIONID', '').strip('"')
+        logger.info("Cookie debug — page URL: %s | JSESSIONID: '%s' | cookies present: %s",
+                    self.page.url,
+                    jsessionid[:30] if jsessionid else 'EMPTY',
+                    list(cookies_dict.keys()))
 
         # Dynamically fetch browser-specific details using page.evaluate
         user_agent = self.page.evaluate("navigator.userAgent")
