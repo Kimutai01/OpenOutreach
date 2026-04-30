@@ -78,23 +78,37 @@ class PlaywrightLinkedinAPI:
         uri = "/identity/dash/profiles"
         full_url = base_url + uri
 
-        res = self.context.request.get(full_url, params=params, headers=self.headers)
+        query_string = "&".join(f"{k}={v}" for k, v in params.items())
+        request_url = f"{full_url}?{query_string}"
 
-        match res.status:
+        result = self.page.evaluate("""
+            async ([url, headers]) => {
+                const response = await fetch(url, {
+                    method: 'GET',
+                    headers: headers,
+                    credentials: 'include'
+                });
+                const text = await response.text();
+                return { status: response.status, body: text };
+            }
+        """, [request_url, self.headers])
+
+        status = result["status"]
+        body = result["body"]
+
+        match status:
             case 401:
                 logger.error("LinkedIn API → 401 Unauthorized (session expired or blocked)")
                 raise AuthenticationError("LinkedIn API returned 401 Unauthorized.")
 
             case 403:
                 logger.info("Profile inaccessible → private / deleted / restricted → %s", public_identifier)
-                logger.debug(f"Body: {json.dumps(res.json(), indent=2)}")
                 return None, None
 
-        if not res.ok:
-            body_str = res.body().decode("utf-8", errors="ignore") if isinstance(res.body(), bytes) else str(res.body())
-            logger.error("API request failed → %s | Status: %s", public_identifier, res.status)
-            raise Exception(f"LinkedIn API error {res.status}: {body_str[:500]}")
+        if status < 200 or status >= 300:
+            logger.error("API request failed → %s | Status: %s", public_identifier, status)
+            raise Exception(f"LinkedIn API error {status}: {body[:500]}")
 
-        data = res.json()
+        data = json.loads(body)
         extracted_info = parse_linkedin_voyager_response(data, public_identifier=public_identifier)
         return extracted_info, data
