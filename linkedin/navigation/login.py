@@ -55,18 +55,14 @@ def _build_proxy_config(config: dict, handle: str) -> dict | None:
 
     Supports two formats in accounts.secrets.yaml:
 
-      # Simple URL string (session already embedded):
-      proxy: "http://user:pass@geo.iproyal.com:12321"
+      # Simple URL string:
+      proxy: "http://user:pass@isp.iproyal.com:12321"
 
-      # Structured (IPRoyal sticky session recommended):
+      # Structured:
       proxy:
-        server: "geo.iproyal.com:12321"
-        username: "myuser_country-us"
+        server: "isp.iproyal.com:12321"
+        username: "myuser"
         password: "mypassword"
-
-    When using structured format without an explicit session suffix in username,
-    a sticky session ID derived from the account handle is appended automatically
-    (_session-{handle}_lifetime-30m) so each account consistently uses the same IP.
     """
     raw = config.get("proxy")
     if not raw:
@@ -76,17 +72,13 @@ def _build_proxy_config(config: dict, handle: str) -> dict | None:
         return {"server": raw}
 
     if isinstance(raw, dict):
-        username = raw.get("username", "")
         server = raw.get("server", "")
-        # Only append IPRoyal sticky session suffix for ISP proxies (isp.iproyal.com)
-        if username and "_session-" not in username and "isp.iproyal.com" in server:
-            username = f"{username}_session-{handle}_lifetime-30m"
         # Ensure server has a scheme (Playwright requires it)
         if server and not server.startswith(("http://", "https://", "socks5://")):
             server = f"http://{server}"
         return {
             "server": server,
-            "username": username,
+            "username": raw.get("username", ""),
             "password": raw.get("password", ""),
         }
 

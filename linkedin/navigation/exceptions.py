@@ -3,6 +3,11 @@ class AuthenticationError(Exception):
     pass
 
 
+class SessionExpiredError(AuthenticationError):
+    """Session cookie (li_at) was revoked — caller must supply fresh cookies and retry."""
+    pass
+
+
 class TerminalStateError(Exception):
     """Profile is already done or dead — caller must skip it"""
     pass

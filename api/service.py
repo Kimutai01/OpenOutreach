@@ -432,12 +432,17 @@ class CampaignService:
                     self._cleanup_temp_file(csv_path)
 
         except Exception as e:
-            logger.error(f"Campaign failed: {str(e)}", exc_info=True)
+            from linkedin.navigation.exceptions import SessionExpiredError
 
-            # 401 means the session is tied to the wrong IP. Delete the stale cookie file
-            # so the next campaign triggers a fresh proxy login and creates a new session
-            # that is bound to the proxy IP.
-            if handle and "401 Unauthorized" in str(e):
+            is_session_expired = isinstance(e, SessionExpiredError) or "401 Unauthorized" in str(e)
+
+            if is_session_expired:
+                logger.warning(f"Session expired for {handle} — stale cookie file deleted, retry with fresh cookies")
+            else:
+                logger.error(f"Campaign failed: {str(e)}", exc_info=True)
+
+            # Cookie file is already deleted inside scrape_profile (authwall path) or here for raw 401s.
+            if handle and not isinstance(e, SessionExpiredError) and "401 Unauthorized" in str(e):
                 from linkedin.conf import COOKIES_DIR
                 stale = COOKIES_DIR / f"{handle}.json"
                 if stale.exists():
@@ -457,6 +462,15 @@ class CampaignService:
                 self._cleanup_temp_file(config_path)
             if csv_path:
                 self._cleanup_temp_file(csv_path)
+
+            if is_session_expired:
+                return {
+                    "success": False,
+                    "error_code": "session_expired",
+                    "message": "LinkedIn session expired. Proxy IP changed — retry with fresh cookies.",
+                    "campaign_id": None,
+                    "profiles_processed": 0
+                }
 
             return {
                 "success": False,

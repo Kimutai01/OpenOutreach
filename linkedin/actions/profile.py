@@ -29,22 +29,63 @@ def scrape_profile(key: SessionKey, profile: dict):
     from linkedin.navigation.utils import goto_page
     from linkedin.db.profiles import url_to_public_id
     public_identifier = url_to_public_id(url)
-    try:
-        goto_page(
-            session,
-            action=lambda: session.page.goto(url, timeout=30_000),
-            expected_url_pattern=f"/in/{public_identifier}",
-            timeout=30_000,
-            error_message=f"Failed to navigate to profile: {url}",
-            to_scrape=False,
-        )
-    except Exception as nav_err:
-        logger.debug("Profile navigation before API call failed: %s", nav_err)
-        # Wait for any in-progress navigation/redirect to settle
+    def _navigate_to_profile():
         try:
-            session.page.wait_for_load_state("domcontentloaded", timeout=5_000)
-        except Exception:
-            pass
+            goto_page(
+                session,
+                action=lambda: session.page.goto(url, timeout=30_000),
+                expected_url_pattern=f"/in/{public_identifier}",
+                timeout=30_000,
+                error_message=f"Failed to navigate to profile: {url}",
+                to_scrape=False,
+            )
+        except Exception as nav_err:
+            logger.debug("Profile navigation before API call failed: %s", nav_err)
+            try:
+                session.page.wait_for_load_state("domcontentloaded", timeout=5_000)
+            except Exception:
+                pass
+
+    _navigate_to_profile()
+
+    # If LinkedIn redirected to authwall, li_at was revoked (likely due to a proxy IP change).
+    # Delete the stale cookie file, then re-login if credentials exist, or raise
+    # SessionExpiredError so the caller can retry with fresh cookies.
+    if "authwall" in session.page.url:
+        from linkedin.navigation.exceptions import SessionExpiredError
+        from linkedin.conf import get_account_config
+        config = get_account_config(session.handle)
+        cookie_file = Path(config["cookie_file"])
+        if cookie_file.exists():
+            cookie_file.unlink()
+            logger.warning("Authwall hit — deleted stale cookie file → %s", cookie_file)
+
+        has_real_credentials = (
+            config.get("password") not in (None, "", "cookie_auth")
+            and not config.get("username", "").endswith("@example.com")
+        )
+
+        if has_real_credentials:
+            logger.info("Re-logging in with stored credentials for %s", session.handle)
+            # Close only the browser (not the DB session) so the campaign can continue.
+            try:
+                if session.context:
+                    session.context.close()
+                if session.browser:
+                    session.browser.close()
+                if session.playwright:
+                    session.playwright.stop()
+            except Exception as e:
+                logger.debug("Error closing browser during re-login: %s", e)
+            finally:
+                session.page = session.context = session.browser = session.playwright = None
+            session.ensure_browser()
+            _navigate_to_profile()
+        else:
+            raise SessionExpiredError(
+                f"LinkedIn session expired (li_at revoked) for {session.handle}. "
+                "Proxy IP likely changed. Retry with fresh cookies."
+            )
 
     api = PlaywrightLinkedinAPI(session=session)
 
