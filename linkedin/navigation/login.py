@@ -28,17 +28,26 @@ def playwright_login(session: "AccountSession"):
 
     goto_page(
         session,
-        action=lambda: page.goto(LINKEDIN_LOGIN_URL),
+        action=lambda: page.goto(LINKEDIN_LOGIN_URL, wait_until="domcontentloaded"),
         expected_url_pattern="/login",
+        timeout=30_000,
         error_message="Failed to load login page",
         to_scrape=False
     )
 
+    # Wait for any JS challenges (Cloudflare etc.) to resolve before interacting
+    try:
+        page.wait_for_load_state("networkidle", timeout=15_000)
+    except Exception:
+        pass
+
     page.screenshot(path=f"/tmp/login_debug_{session.handle}.png")
     logger.info("Login page screenshot → /tmp/login_debug_%s.png", session.handle)
-    page.locator(SELECTORS["email"]).type(config["username"], delay=80)
+
+    page.wait_for_selector(SELECTORS["email"], state="visible", timeout=45_000)
+    page.fill(SELECTORS["email"], config["username"])
     session.wait(to_scrape=False)
-    page.locator(SELECTORS["password"]).type(config["password"], delay=80)
+    page.fill(SELECTORS["password"], config["password"])
     session.wait(to_scrape=False)
 
     goto_page(
