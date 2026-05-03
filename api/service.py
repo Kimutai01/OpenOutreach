@@ -360,16 +360,11 @@ class CampaignService:
 
             config_path, handle = self.create_temporary_account_config(username, password, handle=stable_handle, proxy=proxy)
 
-            # Only write cookies from caller if no persistent proxy-bound session exists.
-            # Once a session is created via a proxy login it is reused across campaigns so
-            # that li_at stays bound to the proxy IP and LinkedIn doesn't reject the session.
             from linkedin.conf import COOKIES_DIR
             persistent_cookie_file = COOKIES_DIR / f"{handle}.json"
-            if cookies and not persistent_cookie_file.exists():
+            if cookies:
                 self.create_temporary_cookies_file(cookies, handle)
-                logger.info(f"No existing session for {handle} — bootstrapping from provided cookies")
-            elif persistent_cookie_file.exists():
-                logger.info(f"Reusing existing proxy-bound session for {handle}")
+                logger.info(f"Writing caller-provided cookies for {handle}")
 
             csv_path = self.create_temporary_urls_csv(urls)
 
