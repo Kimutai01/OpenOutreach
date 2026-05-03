@@ -360,8 +360,6 @@ class CampaignService:
 
             config_path, handle = self.create_temporary_account_config(username, password, handle=stable_handle, proxy=proxy)
 
-            from linkedin.conf import COOKIES_DIR
-            persistent_cookie_file = COOKIES_DIR / f"{handle}.json"
             if cookies:
                 self.create_temporary_cookies_file(cookies, handle)
                 logger.info(f"Writing caller-provided cookies for {handle}")
